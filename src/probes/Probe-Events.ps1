@@ -31,6 +31,13 @@
 #>
 param(
     $Facts,
+    <#
+        Faz parte do contrato de sonda — Invoke-Exam passa o mesmo prazo para
+        todas — mas ESTA sonda não tem como honrá-lo: Get-WinEvent não aceita
+        tempo limite. Fica declarado aqui e em config.json em vez de dar a
+        impressão de que há um teto que não existe. Quem impõe prazo de verdade
+        é o ExecutionTimeLimit da tarefa agendada.
+    #>
     [int]$TimeoutSec = 30,
     [int]$WindowDays = 30,
     [datetime]$Since,
@@ -52,9 +59,14 @@ if (-not $PSBoundParameters.ContainsKey('Since')) { $Since = (Get-Date).AddDays(
     Duas perguntas, porque -ListLog pode responder e a leitura ainda falhar.
     Um log com registros do qual não se consegue ler nenhum evento é um log
     inaccessível, por mais que os metadados apareçam.
+
+    Sem parâmetro de prazo, e isso é declaração e não esquecimento: Get-WinEvent
+    não aceita tempo limite. A versão anterior recebia um -Timeout e não o usava
+    para nada. Limite que não limita é pior que limite nenhum — quem lê a
+    configuração acredita nele.
 #>
 function Test-LogReadable {
-    param([string]$LogName, [int]$Timeout)
+    param([string]$LogName)
 
     try {
         $info = Get-WinEvent -ListLog $LogName -ErrorAction Stop
@@ -133,7 +145,7 @@ try {
     $data.windowDays = $WindowDays
     $data.since      = $Since.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
 
-    $legivel = Test-LogReadable -LogName $LogName -Timeout $TimeoutSec
+    $legivel = Test-LogReadable -LogName $LogName
 
     if (-not $legivel.ok) {
         <#

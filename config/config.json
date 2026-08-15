@@ -24,6 +24,7 @@
       "ausente nunca possa ser confundida com uma sonda que rodou e nao achou",
       "nada."
     ],
+    "_probeTimeoutSec": "Passado a toda sonda do exame, mas a sonda de eventos NAO consegue honra-lo: Get-WinEvent nao aceita tempo limite. Quem impoe prazo de verdade e o ExecutionTimeLimit da tarefa agendada. Fica dito para ninguem acreditar num teto que nao existe.",
     "probeTimeoutSec": 30,
     "probes": [
       { "name": "Events", "key": "evt" }

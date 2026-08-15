@@ -199,6 +199,11 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     Assert-Equal 95 (@(Get-WMSpelledNumbers -Text 'noventa e cinco')[0].value) 'mas o composto de verdade ainda soma: 95'
     Assert-Equal 105 (@(Get-WMSpelledNumbers -Text 'cento e cinco')[0].value) 'e cento e cinco é 105'
 
+    # 'mil' escapava por não ter dígito, e 2000 MB é medida plausível.
+    $rr = Test-WMLaudoNumbers -Text 'A memoria livre caiu para mil MB.' -Package $pac
+    Assert-True (-not $rr.ok) '"mil" não escapa por não ter dígito'
+    Assert-Equal 1000 (@(Get-WMSpelledNumbers -Text 'mil')[0].value) 'mil é 1000'
+
     <#
         DÍGITO QUE O CONVERSOR NÃO SABE LER É ÓRFÃO, não é descartado. O '\d' do
         .NET casa dígito Unicode de largura inteira; ConvertTo-WMNumber, que é
@@ -260,6 +265,17 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     #>
     $rr = Test-WMLaudoRuleIds -Text 'O achado R-MEMÓRIA-VAZANDO sugere um problema.' -Package $pac
     Assert-True (-not $rr.ok) 'regra inventada COM ACENTO é pega'
+
+    <#
+        E o outro sentido: prosa portuguesa comum não pode ser acusada de citar
+        regra que não existe. Identificador deste projeto sempre tem dois
+        segmentos depois do R; exigir isso elimina os falsos positivos sem
+        afrouxar nada, porque nenhuma regra real tem um segmento só.
+    #>
+    foreach ($prosa in 'o r-quadrado do ajuste ficou baixo', 'o eixo r-y do grafico', 'a norma R-123 nao se aplica') {
+        $rr = Test-WMLaudoRuleIds -Text $prosa -Package $pac
+        Assert-True $rr.ok "prosa comum não é acusada de citar regra: '$prosa'"
+    }
 
     # =====================================================================
     Start-TestGroup 'CONFERÊNCIA: achado inventado  [MUTAÇÃO]'

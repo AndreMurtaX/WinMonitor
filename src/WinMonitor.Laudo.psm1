@@ -367,7 +367,7 @@ function Get-WMSpelledNumbers {
         'quinhentos'=500;'seiscentos'=600;'setecentos'=700;'oitocentos'=800;'novecentos'=900
     }
 
-    $todas = @($cem.Keys) + @($dez.Keys) + @($unid.Keys)
+    $todas = @('mil') + @($cem.Keys) + @($dez.Keys) + @($unid.Keys)
     $alt   = ($todas | ForEach-Object { [regex]::Escape($_) }) -join '|'
 
     <#
@@ -396,13 +396,25 @@ function Get-WMSpelledNumbers {
             distintos ligados por uma conjunção comum, e somá-los inventava um
             órfão em prosa honesta.
         #>
+        <#
+            'mil' entra como a classe mais alta. 'dois mil MB' é medida
+            perfeitamente plausível, e sem isto o número passava por não ter
+            dígito — a mesma porta que 'noventa e cinco' usava.
+
+            A multiplicação ('dois mil') fica de fora de propósito: exigiria um
+            analisador de numeral de verdade, e o ganho não paga a chance de
+            errar. 'mil' sozinho vale 1000, e 'dois' é contado à parte — o que
+            pode gerar órfão a mais, nunca a menos.
+        #>
         $classe = { param($p)
+            if ($p -eq 'mil')       { return 4 }
             if ($cem.Contains($p))  { return 3 }
             if ($dez.Contains($p))  { return 2 }
             if ($unid.Contains($p)) { return 1 }
             0
         }
         $valor = { param($p)
+            if ($p -eq 'mil')       { return 1000 }
             if ($cem.Contains($p))  { return [int]$cem[$p] }
             if ($dez.Contains($p))  { return [int]$dez[$p] }
             if ($unid.Contains($p)) { return [int]$unid[$p] }
@@ -587,7 +599,15 @@ function Test-WMLaudoRuleIds {
         \p{L} em vez de A-Z pela mesma razão, e as âncoras viram lookaround
         porque \b é definido em cima de \w e volta a falhar na borda acentuada.
     #>
-    foreach ($m in [regex]::Matches($Text, '(?i)(?<![\p{L}\d])R[-_][\p{L}\d_-]{2,}(?![\p{L}\d])')) {
+    <#
+        DOIS SEGMENTOS, no mínimo. Identificador de regra deste projeto sempre
+        tem a forma R-ALGO-ALGO: R-GPU-TEMP-DRIFT, R-DISK-SPACE-LOW. Exigir o
+        segundo hífen elimina os falsos positivos que a versão anterior criava
+        em prosa portuguesa — 'r-quadrado', 'R-123' e afins eram acusados de
+        regra inventada, e guarda que reprova texto honesto acaba desligada por
+        quem a mantém.
+    #>
+    foreach ($m in [regex]::Matches($Text, '(?i)(?<![\p{L}\d])R[-_][\p{L}\d]+[-_][\p{L}\d_-]+(?![\p{L}\d])')) {
         $id = $m.Value.TrimEnd('-', '_')
         if (-not $conhecidos.Contains($id) -and -not $inventados.Contains($id)) { [void]$inventados.Add($id) }
     }

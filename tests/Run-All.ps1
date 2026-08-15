@@ -36,8 +36,8 @@ param([switch]$Quiet)
 $suites = @(
     @{ file = 'Test-Rollup.ps1';  min = 147 }
     @{ file = 'Test-Rules.ps1';   min = 135 }
-    @{ file = 'Test-Laudo.ps1';       min = 93 }
-    @{ file = 'Test-LaudoDriver.ps1'; min = 21 }
+    @{ file = 'Test-Laudo.ps1';       min = 98 }
+    @{ file = 'Test-LaudoDriver.ps1'; min = 23 }
     @{ file = 'Test-Report.ps1';      min = 60 }
     @{ file = 'Test-Exam.ps1';        min = 25 }
     @{ file = 'Test-Drivers.ps1'; min = 56  }

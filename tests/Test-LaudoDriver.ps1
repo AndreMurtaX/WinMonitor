@@ -88,7 +88,9 @@ try {
     $l1 = Read-Laudo $p1
 
     Assert-True ($l1.rejected -eq $true) 'provedor falho: o laudo é gravado como reprovado'
-    Assert-Equal 2 (@($l1.attempts).Count) 'as DUAS tentativas ficam registradas'
+    Assert-Equal 2 (@($l1.attemptLog).Count) 'as DUAS tentativas ficam registradas'
+    Assert-Equal 2 $l1.attempts 'e a contagem bate com o registro'
+    Assert-True ($l1.attempts -is [int]) "'attempts' é número no reprovado, como já era no aprovado"
     Assert-True ((@($l1.violations) -join ' ') -match 'sem chave de teste') 'e o motivo do provedor aparece'
     Assert-True ($out -match 'REPROVADO') 'o driver diz que reprovou'
     Assert-True ($out -match 'pouco espaco livre') 'e mostra o achado CRU, que é verdade verificável'
@@ -113,8 +115,8 @@ try {
     $l2 = Read-Laudo $p2
 
     Assert-True ($l2.rejected -eq $true) 'resposta não-JSON: reprovado'
-    Assert-Equal 2 (@($l2.attempts).Count) 'as duas tentativas registradas'
-    Assert-True ((@($l2.attempts)[0].text) -match 'isto nao e json') 'o TEXTO CRU é preservado para perícia'
+    Assert-Equal 2 (@($l2.attemptLog).Count) 'as duas tentativas registradas'
+    Assert-True ((@($l2.attemptLog)[0].text) -match 'isto nao e json') 'o TEXTO CRU é preservado para perícia'
     $seg = Get-Content (Get-Dubles)[1].FullName -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-True (@($seg.rejectedBecause).Count -gt 0) 'e a 2a chamada recebeu o motivo'
 

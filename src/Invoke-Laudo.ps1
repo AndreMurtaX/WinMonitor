@@ -213,7 +213,15 @@ if ($null -eq $laudo) {
         verdict    = $achados.verdict
         rejected   = $true
         violations = @($violacoes)
-        attempts   = @($rejeitados)
+        <#
+            'attempts' é a CONTAGEM nos dois arquivos, e o registro das
+            tentativas mora em 'attemptLog'. Antes o mesmo campo era Int32 no
+            laudo aprovado e Object[] no reprovado — quem lesse o diretório para
+            fazer estatística ganhava um tipo diferente conforme o desfecho, que
+            é a pior hora para descobrir uma diferença de esquema.
+        #>
+        attempts   = @($rejeitados).Count
+        attemptLog = @($rejeitados)
         madeAt     = Get-WMTimestamp
     }
     $json = ConvertTo-Json -InputObject $reprovado -Depth 10
