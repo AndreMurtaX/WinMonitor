@@ -42,16 +42,22 @@ que está normal. Métrica ausente e métrica boa não podem se parecer.
 | Fase | O que é | Situação |
 | --- | --- | --- |
 | F0 | Contratos, configuração, módulo comum | pronto |
-| F1 | Ronda: sondas baratas + tarefa agendada | pronto |
-| F2 | Armazém: agregação por faixa de carga, linha-base | a fazer |
+| F1 | Ronda: sondas baratas + tarefa agendada | pronto (tarefa não registrada) |
+| F2 | Armazém: agregação por faixa de carga, linha-base | pronto |
 | F3 | Exame completo: SMART, eventos, sensores | a fazer |
-| F4 | Regras e limiares | a fazer |
-| F5 | Parecer com provedor plugável | a fazer |
+| F4 | Regras e limiares | pronto |
+| F5 | Parecer com provedor plugável | pronto |
 | F6 | Notificação e relatório de tendência | a fazer |
 
-Enquanto F2–F5 não existirem, o projeto grava história e não conclui nada. Isso
-é intencional: sem semanas de dado acumulado, qualquer conclusão seria só uma
-releitura em voz alta do Gerenciador de Tarefas.
+**O que ainda não roda sozinho.** A tarefa agendada não está registrada, então
+não há coleta contínua — e sem coleta não se forma linha-base, e sem linha-base
+metade das regras fica permanentemente "sem referência". É o único item que
+separa o projeto de estar funcionando de verdade. Duas formas de resolver, em
+[Uso](#uso).
+
+Sem semanas de dado acumulado, qualquer conclusão seria só uma releitura em voz
+alta do Gerenciador de Tarefas. Isso é intencional, e o sistema diz "ainda não
+sei" em vez de fingir.
 
 ---
 
@@ -75,11 +81,24 @@ Rodar uma coleta e ver o resultado, sem gravar nada:
 .\src\Invoke-Patrol.ps1 -PassThru -NoWrite | ConvertTo-Json -Depth 8
 ```
 
-Instalar a ronda como tarefa agendada (o registro pede elevação; a ronda em si
-não):
+Instalar a ronda como tarefa agendada. Dois modos, e a diferença importa:
+
+```powershell
+.\tools\Register-PatrolTask.ps1 -CurrentUserOnly
+```
+
+Sem elevação. A ronda roda enquanto a conta estiver logada. É a opção para
+começar a coletar hoje.
 
 ```powershell
 .\tools\Register-PatrolTask.ps1
+```
+
+Modo S4U: roda mesmo sem ninguém logado, que é o certo para um servidor. O
+**registro** exige elevação (a ronda em si, não):
+
+```powershell
+Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','C:\Dev\WinMonitor\tools\Register-PatrolTask.ps1'
 ```
 
 Remover:
@@ -102,10 +121,23 @@ Ver se já há dado suficiente para congelar a linha-base, e congelá-la:
 .\src\New-Baseline.ps1 -Reason "primeira linha-base"
 ```
 
-Rodar os testes:
+Avaliar as regras contra o agregado do dia, e depois pedir o parecer:
 
 ```powershell
-.\tests\Test-Rollup.ps1
+.\src\Invoke-Rules.ps1
+.\src\Invoke-Laudo.ps1
+```
+
+Ver o pacote exato que o modelo receberia, sem chamar modelo nenhum:
+
+```powershell
+.\src\Invoke-Laudo.ps1 -DryRun
+```
+
+Rodar todos os testes:
+
+```powershell
+.\tests\Run-All.ps1
 ```
 
 ---
@@ -165,11 +197,73 @@ A linha-base se recusa a existir sobre dado insuficiente: exige 14 dias de ronda
 **e** 20 janelas de carga alta sustentada, ambos medidos dentro da mesma janela
 que será congelada, e recusa também se o perfil resultante não contiver a faixa
 de carga alta — sem ela não há contra o que comparar. Antes disso a resposta é
-"ainda não sei".
+"ainda não sei" — que é honesta, e melhor que um diagnóstico apoiado em ruído.
 
-E a linha-base se recusa a existir sobre dado insuficiente: exige 14 dias de
-ronda **e** 20 janelas de carga alta sustentada. Antes disso a resposta é
-"ainda não sei", que é honesta — e melhor que um diagnóstico apoiado em ruído.
+---
+
+## Como o laudo é conferido
+
+O modelo escreve o parecer, e nada do que ele escreve é aceito por confiança. O
+pacote que ele recebe é fechado — só os Achados, as séries que os Achados citam,
+o bloco de cobertura e o laudo anterior. Sem acesso à máquina, ao dado bruto ou
+à tabela de limiares: o que não está no pacote ele não tem como inventar com
+aparência de dado.
+
+O que volta passa por quatro conferências, todas determinísticas. Nenhuma
+precisa de um segundo modelo concordar:
+
+| Guarda | O que exige |
+| --- | --- |
+| Números | todo número do texto tem de existir no pacote |
+| Regras citadas | só cita identificador de regra que o pacote contém |
+| Achados | os achados do laudo ⊆ os achados do pacote, com contagem |
+| Forma | cobertura incompleta obriga a declarar a lacuna; pacote sem achados proíbe hipótese |
+
+Reprovado, o laudo é reapresentado uma vez com os motivos exatos. Falhando de
+novo, ele **não é mostrado**: grava-se o texto cru para perícia e apresentam-se
+os Achados crus, que são verdade verificável. Um parecer que não passa na
+própria conferência é pior que nenhum parecer, porque tem a forma de resposta.
+
+### As três últimas guardas vieram de execução real, não de teste
+
+A primeira guarda foi projetada. As outras três existem porque modelos de
+verdade fizeram, na primeira semana, exatamente o que a teoria não previu.
+
+**O falso positivo.** O laudo escreveu "RTX 3080" e a conferência acusou `3080`
+de ser inventado. Estava no pacote — dentro de `NVIDIA GeForce RTX 3080` — mas
+a remoção de literais só casava a string inteira, e ninguém escreve o nome
+completo quando o curto basta. Número em nome de peça passou a ser citável;
+número em caminho de métrica, não. A distinção é o que impede que o `95` de
+`p95` vire medida permitida.
+
+**O achado sem número.** Num pacote com zero achados e veredito `normal`, o
+modelo devolveu:
+
+```
+ruleId : R-GPU-TEMP-SPEC-3080
+reading: A temperatura da RTX 3080 está acima do especificado.
+action : O valor não foi fornecido no pacote.
+```
+
+Ele sabia que não tinha dado e afirmou assim mesmo. A guarda de números não
+pega — o achado não tem número. A de regras não pega — aquele identificador é
+legítimo de citar, está em `coverage` como não avaliado, e o campo estruturado
+nem chegava ao texto examinado. Foi rejeitado só porque outra frase trazia um
+número inventado: sorte, não defesa. A distinção que faltava é que regra em
+`coverage` é **citável** e nunca é **achado**.
+
+**A lacuna calada.** Outro modelo passou nas três guardas e devolveu o campo
+`notVerified` vazio com a cobertura incompleta, mais uma hipótese afirmando que
+a placa parecia quente — num pacote sem nenhuma temperatura. A primeira é o pior
+modo de falhar deste projeto: um laudo silencioso sobre a própria ignorância
+lê-se como "está tudo bem". O lema **lacuna declarada nunca vira "tudo certo"**
+só vale se alguém conferir que ela foi declarada. A segunda é a invenção
+mudando de campo — sem número, a guarda aritmética dorme; em `observations`, a
+de achados dorme.
+
+Cada guarda nova traz junto o teste que prova que as **anteriores** deixavam
+aquele caso passar. Sem isso não há como saber se ela é necessária ou
+decorativa.
 
 ---
 
@@ -231,6 +325,15 @@ projeto: o que não foi verificado precisa estar dito.
   inflação sistemática da primeira leitura. O respiro de 400 ms antes de
   amostrar fica como margem.
 - **Sem histórico, nada aqui diagnostica.** A linha-base precisa de semanas.
+- **Modelo pequeno não escreve laudo aproveitável.** Medido, não suposto: contra
+  um pacote sem achados, o `gemma3:4b` inventou achados em todas as tentativas
+  de todas as execuções. O `mistral:latest` passa nas quatro conferências, mas o
+  texto sai mecânico — lista identificador de regra em vez de explicar. As
+  guardas compram correção, não eloquência; para laudo de produção o provedor
+  remoto continua sendo a escolha defensável.
+- **A prosa livre sem número ainda não é conferida.** As quatro guardas cobrem
+  número, regra citada, achado e forma. Uma afirmação vaga e sem dígito dentro
+  do `summary` passa. É a fronteira conhecida do método.
 
 ---
 
