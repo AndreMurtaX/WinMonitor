@@ -1,0 +1,7 @@
+# Projeto Windows: scripts em CRLF, que é o que o PowerShell espera e o que
+# evita ruído de diff em quem clonar no Windows.
+* text=auto
+
+*.ps1  text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf

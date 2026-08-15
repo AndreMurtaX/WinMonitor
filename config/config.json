@@ -1,0 +1,35 @@
+{
+  "version": 1,
+
+  "patrol": {
+    "settleMs": 400,
+    "probeTimeoutSec": 8,
+    "probes": [
+      { "name": "Cpu",          "key": "cpu" },
+      { "name": "Memory",       "key": "mem" },
+      { "name": "StorageUsage", "key": "sto" },
+      { "name": "GpuNvidia",    "key": "gpu" }
+    ]
+  },
+
+  "retention": {
+    "_comment": "Bruto por 90 dias. Medido: ~900 bytes por amostra, ~1,3 MB/dia, ~117 MB no total. Perícia vale muito mais que isso.",
+    "patrolRawDays": 90,
+    "logDays": 90
+  },
+
+  "paths": {
+    "patrol": "data\\patrol",
+    "exam": "data\\exam",
+    "rollup": "data\\rollup",
+    "baseline": "data\\baseline",
+    "logs": "logs"
+  },
+
+  "loadBands": [
+    { "id": "b00", "min": 0,  "max": 25 },
+    { "id": "b25", "min": 25, "max": 50 },
+    { "id": "b50", "min": 50, "max": 75 },
+    { "id": "b75", "min": 75, "max": 101 }
+  ]
+}

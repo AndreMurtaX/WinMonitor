@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# Este repositório é público. Nada que descreva a máquina monitorada ou que
+# contenha credencial pode entrar aqui.
+# ---------------------------------------------------------------------------
+
+# Telemetria coletada: nome do host, modelos e seriais de disco, séries de
+# temperatura, laudos. Pertence à máquina, não ao repositório.
+/data/
+/logs/
+
+# Segredos.
+/config/secrets.json
+*secret*.json
+*credential*
+.env
+.env.*
+
+# ...mas o arquivo de exemplo precisa ir versionado: é ele que documenta a
+# estrutura esperada, sem conter valor nenhum.
+!/config/secrets.example.json
+
+# Configuração específica desta máquina.
+/config/config.local.json
+
+# Ferramentas de terceiros baixadas localmente (smartmontools, LibreHardwareMonitor).
+/vendor/
+
+# Ruído do Windows e de editores.
+Thumbs.db
+desktop.ini
+*.tmp
+.vs/
+.vscode/
