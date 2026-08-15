@@ -64,16 +64,41 @@ function Test-LogReadable {
 
     if ($null -eq $info) { return @{ ok = $false; reason = "log '$LogName' não devolveu metadados" } }
 
-    # Log realmente vazio é legível e não tem o que ler.
-    if ([int]$info.RecordCount -eq 0) { return @{ ok = $true; records = 0 } }
+    if (-not $info.IsEnabled) {
+        return @{ ok = $false; reason = "log '$LogName' está DESABILITADO: nada foi registrado nele, e ausência de registro não é ausência de evento" }
+    }
 
+    <#
+        NUNCA sair daqui sem ter LIDO.
+
+        Havia um atalho: RecordCount igual a zero devolvia "legível, vazio" sem
+        tentar leitura nenhuma. Dois problemas medidos:
+
+          - [int]$null é 0 em PowerShell, e log desabilitado devolve RecordCount
+            nulo. Havia 84 logs assim nesta máquina. Todos passavam por "legível
+            e vazio", e a sonda então afirmava 0 desligamento inesperado em 30
+            dias a partir de um log que ela nunca abriu.
+          - Mesmo com RecordCount 0 de verdade, zero registros AGORA não prova
+            que a leitura seria permitida. Limpar o log de eventos é ação de
+            rotina, e depois dela a sonda atestaria saúde sobre histórico
+            inexistente.
+
+        É a ausência virando zero dentro da função escrita para impedir que a
+        ausência vire zero. Agora a legibilidade é sempre confirmada por leitura:
+        NoMatchingEventsFound aqui é resposta legítima — o log respondeu, e a
+        resposta foi "não tenho nada".
+    #>
     try {
         $um = @(Get-WinEvent -LogName $LogName -MaxEvents 1 -ErrorAction Stop)
         if ($um.Count -eq 0) {
-            return @{ ok = $false; reason = "log '$LogName' declara $($info.RecordCount) registros mas não devolveu nenhum: leitura negada" }
+            return @{ ok = $false; reason = "log '$LogName' não devolveu nenhum evento e nem sinalizou vazio: leitura negada" }
         }
     } catch {
-        return @{ ok = $false; reason = "log '$LogName' tem $($info.RecordCount) registros e a leitura falhou: $($_.Exception.Message)" }
+        if ([string]$_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') {
+            # O log respondeu que está vazio. Isso é legível.
+            return @{ ok = $true; records = 0; empty = $true }
+        }
+        return @{ ok = $false; reason = "log '$LogName' não pôde ser lido: $($_.Exception.Message)" }
     }
 
     @{ ok = $true; records = [int]$info.RecordCount }

@@ -247,25 +247,58 @@ Add-Member -InputObject $laudo -NotePropertyName madeAt  -NotePropertyValue (Get
 $json = ConvertTo-Json -InputObject $laudo -Depth 12
 [System.IO.File]::WriteAllText($destino, $json, (New-Object System.Text.UTF8Encoding($false)))
 
-# --- saída ------------------------------------------------------------------
+<#
+    --- saída ---
+
+    A ORDEM É DEFESA, NÃO ESTÉTICA. O determinístico vem primeiro: veredito,
+    cobertura, e os Achados com o texto CRU das regras. Só depois entra a prosa
+    do modelo.
+
+    Existe porque a prosa conseguiu contradizer o veredito e ser apresentada: um
+    resumo dizendo "nada mereceu atenção, a máquina está saudável" saiu logo
+    abaixo de "Veredito : agir". As guardas conferem número, regra, achado e
+    forma — nenhuma confere se uma frase sem número nega o que as regras
+    concluíram, e não há aritmética que confira isso.
+
+    O que dá para fazer sem julgamento de modelo é não deixar a prosa ser a
+    primeira coisa lida, nem a única. Quem abre o parecer vê o veredito e os
+    achados medidos antes de qualquer frase escrita por LLM — e se as duas
+    coisas discordarem, a discordância fica visível em vez de ficar plausível.
+#>
 ""
 "PARECER — $dia"
 "Veredito : $($laudo.verdict)   (calculado pelas regras, não pelo modelo)"
 "Cobertura: {0}" -f $(if ($laudo.coverageComplete) { 'completa' } else { 'INCOMPLETA' })
 ""
-$laudo.summary
+if (@($achados.findings).Count -gt 0) {
+    "Achados medidos pelas regras ($(@($achados.findings).Count)):"
+    foreach ($a in @($achados.findings)) { "  [{0,-8}] {1}" -f $a.severity, $a.claim }
+    ""
+} else {
+    "Achados medidos pelas regras: nenhum."
+    ""
+}
+
+"Não verificado:"
+if (@($laudo.notVerified).Count -eq 0) {
+    "  (nada declarado)"
+} else {
+    foreach ($n in @($laudo.notVerified)) {
+        if ($n -is [string]) { "  - $n" } else { "  - {0}: {1}" -f $n.ruleId, $n.note }
+    }
+}
+""
+
+"Leitura do modelo:"
+"  $($laudo.summary)"
 ""
 if (@($laudo.findings).Count -gt 0) {
-    "Achados:"
     foreach ($a in @($laudo.findings)) {
         "  - $($a.reading)"
         "    o que fazer: $($a.action)"
     }
     ""
 }
-"Não verificado:"
-"  $($laudo.notVerified)"
-""
 if ($laudo.changedSinceLast) { "Desde o laudo anterior:"; "  $($laudo.changedSinceLast)"; "" }
 if (@($laudo.observations).Count -gt 0) {
     "Observações (hipóteses, NÃO verificadas):"

@@ -252,9 +252,10 @@ precisa de um segundo modelo concordar:
 
 | Guarda | O que exige |
 | --- | --- |
-| Números | todo número do texto tem de existir no pacote |
+| Números | todo número extraído do texto tem de existir no pacote |
 | Regras citadas | só cita identificador de regra que o pacote contém |
-| Achados | os achados do laudo ⊆ os achados do pacote, com contagem |
+| Achados | os achados do laudo são **exatamente** os do pacote, com contagem |
+| Lacunas | `notVerified` é lista de identificadores e cobre **todas** as lacunas |
 | Forma | cobertura incompleta obriga a declarar a lacuna; pacote sem achados proíbe hipótese |
 
 Reprovado, o laudo é reapresentado uma vez com os motivos exatos. Falhando de
@@ -262,17 +263,24 @@ novo, ele **não é mostrado**: grava-se o texto cru para perícia e apresentam-
 os Achados crus, que são verdade verificável. Um parecer que não passa na
 própria conferência é pior que nenhum parecer, porque tem a forma de resposta.
 
-### As três últimas guardas vieram de execução real, não de teste
+### Quase nenhuma dessas guardas foi projetada
 
-A primeira guarda foi projetada. As outras três existem porque modelos de
-verdade fizeram, na primeira semana, exatamente o que a teoria não previu.
+Uma foi. As outras existem porque modelos de verdade, e depois uma verificação
+adversarial, fizeram exatamente o que a teoria não previu.
 
-**O falso positivo.** O laudo escreveu "RTX 3080" e a conferência acusou `3080`
-de ser inventado. Estava no pacote — dentro de `NVIDIA GeForce RTX 3080` — mas
-a remoção de literais só casava a string inteira, e ninguém escreve o nome
-completo quando o curto basta. Número em nome de peça passou a ser citável;
-número em caminho de métrica, não. A distinção é o que impede que o `95` de
-`p95` vire medida permitida.
+**O falso positivo, e o buraco que o conserto dele abriu.** O laudo escreveu
+"RTX 3080" e a conferência acusou `3080` de ser inventado — estava no pacote,
+dentro de `NVIDIA GeForce RTX 3080`, mas a remoção de literais só casava a
+string inteira. O conserto óbvio foi liberar os números embutidos em nomes de
+peça. Foi o pior erro do projeto até agora: o disco desta máquina chama-se
+`ST10000NM001G-2MW103`, dele saía o `103`, e a tolerância de 5% transformava
+isso na faixa contínua **98–108** — onde mora uma temperatura de CPU plausível.
+Um laudo afirmando "a CPU chegou a 100 graus" passou nas quatro guardas contra
+um pacote com zero achados e nenhuma temperatura.
+
+Hoje nome de peça não libera número nenhum: remove-se a **frase** do texto.
+`i9-11900K` sai sozinho, porque ninguém confunde isso com medida; `3080` só sai
+acompanhado, como em "RTX 3080". Escrever "3080 graus" é órfão.
 
 **O achado sem número.** Num pacote com zero achados e veredito `normal`, o
 modelo devolveu:
@@ -369,6 +377,12 @@ projeto: o que não foi verificado precisa estar dito.
   texto sai mecânico — lista identificador de regra em vez de explicar. As
   guardas compram correção, não eloquência; para laudo de produção o provedor
   remoto continua sendo a escolha defensável.
+- **A extração de números é forte, não é total.** Cobre algarismo, decimal,
+  notação científica, milhar com ponto e numeral por extenso em português.
+  Continuam de fora: fração por extenso ("meio grau"), `mil` e seus compostos,
+  algarismo romano e numeral em outro idioma. Dígito que o conversor invariante
+  recusa — Unicode de largura inteira, por exemplo — vira órfão em vez de ser
+  descartado em silêncio.
 - **A prosa livre sem número ainda não é conferida.** As quatro guardas cobrem
   número, regra citada, achado e forma. Uma afirmação vaga e sem dígito dentro
   do `summary` passa. É a fronteira conhecida do método.

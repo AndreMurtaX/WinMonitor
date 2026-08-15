@@ -185,6 +185,61 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     $rr = Test-WMLaudoNumbers -Text 'Foram dois achados no período.' -Package $pac
     Assert-True $rr.ok 'mas "dois" continua passando: 2 está no pacote'
 
+    <#
+        FALSOS POSITIVOS QUE A PRÓPRIA CORREÇÃO DO EXTRATOR CRIOU, e que
+        recusavam laudo honesto. Guarda que reprova texto correto acaba sendo
+        desligada por quem a mantém, e aí não guarda mais nada.
+    #>
+    $rr = Test-WMLaudoNumbers -Text 'O volume está a 2 por cento de uso.' -Package $pac
+    Assert-True $rr.ok '"por cento" é unidade, não o número cem'
+
+    $rr = Test-WMLaudoNumbers -Text 'O problema apareceu entre dois e três dias atrás.' -Package $pac
+    Assert-True $rr.ok '"entre dois e três" são dois numerais, não a soma 5'
+
+    Assert-Equal 95 (@(Get-WMSpelledNumbers -Text 'noventa e cinco')[0].value) 'mas o composto de verdade ainda soma: 95'
+    Assert-Equal 105 (@(Get-WMSpelledNumbers -Text 'cento e cinco')[0].value) 'e cento e cinco é 105'
+
+    <#
+        DÍGITO QUE O CONVERSOR NÃO SABE LER É ÓRFÃO, não é descartado. O '\d' do
+        .NET casa dígito Unicode de largura inteira; ConvertTo-WMNumber, que é
+        invariante, recusa. O 'continue' que havia aqui jogava fora em silêncio
+        justamente o token mais suspeito do texto.
+    #>
+    $rr = Test-WMLaudoNumbers -Text ("A CPU chegou a " + [char]0xFF19 + [char]0xFF15 + " graus.") -Package $pac
+    Assert-True (-not $rr.ok) 'dígito unicode que o conversor recusa vira órfão, não silêncio'
+
+    # =====================================================================
+    Start-TestGroup 'CONFERÊNCIA: as duas reaberturas do BL-1  [MUTAÇÃO]'
+
+    <#
+        N-2. Get-WMHardwarePhrases adicionava a string INTEIRA sem critério, e
+        um campo de hardware cujo valor é só dígito — disks[].id vale "98" numa
+        máquina com dez discos — virava frase sozinho. Aí 98 sumia do texto e
+        "a CPU chegou a 98 graus" passava. É um dos números do laudo atacante.
+    #>
+    Assert-Equal 0 (@(Get-WMHardwarePhrases -Hardware '3080').Count) 'string de hardware só com dígito NÃO vira frase'
+    Assert-Equal 1 (@(Get-WMHardwarePhrases -Hardware 'MP600').Count) 'mas token misto letra+dígito vira'
+    Assert-True  (@(Get-WMHardwarePhrases -Hardware 'RTX 3080') -contains 'RTX 3080') 'e a frase de dois tokens também'
+    Assert-Equal 0 (@(Get-WMHardwarePhrases -Hardware $null).Count) 'hardware nulo não produz frase'
+
+    $HWNUM = New-Data '{"os":"Windows 11 Pro","cpuCores":8,"disks":[{"id":"98","name":"Disco","sizeGB":1863}]}'
+    $pacNum = New-WMLaudoPackage -Findings $VAZIO_OU_ACHADOS -Hardware $HWNUM
+    $rr = Test-WMLaudoNumbers -Text 'A CPU chegou a 98 graus no pico.' -Package $pacNum
+    Assert-True (-not $rr.ok) 'campo de hardware puramente numérico não libera 98 como medida'
+
+    <#
+        N-3. A remoção de frase usava -replace sem âncora. Do host.json real sai
+        a frase "11 Pro" (de "Microsoft Windows 11 Pro"), que casava o começo de
+        "11 processos" e apagava um 11 inventado. Medido ponta a ponta: "havia 11
+        processos travados" era APROVADO e "havia 11 travamentos" reprovado — a
+        diferença era só a palavra depois do dígito.
+    #>
+    $pacOs = New-WMLaudoPackage -Findings $VAZIO_OU_ACHADOS -Hardware (New-Data '{"os":"Microsoft Windows 11 Pro","cpuCores":8}')
+    $rr = Test-WMLaudoNumbers -Text 'Havia 11 processos travados no periodo.' -Package $pacOs
+    Assert-True (-not $rr.ok) 'a frase "11 Pro" não come o 11 de "11 processos"'
+    $rr = Test-WMLaudoNumbers -Text 'O sistema e o Microsoft Windows 11 Pro.' -Package $pacOs
+    Assert-True $rr.ok 'e citar o nome do sistema inteiro continua passando'
+
     Assert-Equal 95 (@(Get-WMSpelledNumbers -Text 'noventa e cinco')[0].value) 'a soma por extenso é 95, não 90 e 5 soltos'
     Assert-Equal 100 (@(Get-WMSpelledNumbers -Text 'cem')[0].value) 'cem é 100'
 
@@ -197,6 +252,14 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     }
     $rr = Test-WMLaudoRuleIds -Text 'a regra r-gpu-temp-drift disparou' -Package $pac
     Assert-True $rr.ok 'e uma regra que EXISTE passa mesmo em caixa baixa'
+
+    <#
+        Com acento. 'R-MEMÓRIA-VAZANDO' escapava inteira porque \b não fecha
+        fronteira entre 'M' e 'Ó' — num laudo em português essa é a grafia
+        provável, e a guarda só funcionava enquanto o modelo não acentuasse.
+    #>
+    $rr = Test-WMLaudoRuleIds -Text 'O achado R-MEMÓRIA-VAZANDO sugere um problema.' -Package $pac
+    Assert-True (-not $rr.ok) 'regra inventada COM ACENTO é pega'
 
     # =====================================================================
     Start-TestGroup 'CONFERÊNCIA: achado inventado  [MUTAÇÃO]'
@@ -230,7 +293,7 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     $VAZIO = New-Data '{"v":1,"window":"2026-08-15","host":"TESTE","verdict":"normal","findings":[],"coverage":{"complete":false,"evaluated":[],"unsourced":{"R-CPU-TEMP-SPEC":"fonte pendente"},"malformed":{},"noData":{"R-GPU-TEMP-SPEC-3080":"sem amostra"},"noBaseline":{},"notApplicable":{}}}'
     $pacV = New-WMLaudoPackage -Findings $VAZIO -Hardware $HW
 
-    $inventado = New-Data '{"summary":"x","notVerified":"y","changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-SPEC-3080","reading":"A temperatura da placa está acima do especificado.","action":"O valor não foi fornecido no pacote."}]}'
+    $inventado = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-SPEC-3080","reading":"A temperatura da placa está acima do especificado.","action":"O valor não foi fornecido no pacote."}]}'
     $f1 = Test-WMLaudoFindings -Laudo $inventado -Package $pacV
     Assert-True (-not $f1.ok) 'regra de coverage virando ACHADO é rejeitada'
     Assert-True (@($f1.invented) -contains 'R-GPU-TEMP-SPEC-3080') 'e é nominada'
@@ -242,11 +305,11 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     Assert-True (Test-WMLaudoRuleIds -Text $textoInv -Package $pacV).ok 'a guarda de regras deixa passar (ruleId não está na prosa)'
 
     # Pacote vazio, laudo vazio: é a resposta certa, não uma falha.
-    $limpo = New-Data '{"summary":"Nada mereceu atenção.","notVerified":"y","changedSinceLast":"","observations":[],"findings":[]}'
+    $limpo = New-Data '{"summary":"Nada mereceu atenção.","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[]}'
     Assert-True (Test-WMLaudoFindings -Laudo $limpo -Package $pacV).ok 'pacote sem achados, laudo sem achados: passa'
 
     # Relatar os achados que existem, passa.
-    $fiel = New-Data '{"summary":"x","notVerified":"y","changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a","action":"b"},{"ruleId":"R-DISK-SPACE-LOW","reading":"c","action":"d"}]}'
+    $fiel = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a","action":"b"},{"ruleId":"R-DISK-SPACE-LOW","reading":"c","action":"d"}]}'
     Assert-True (Test-WMLaudoFindings -Laudo $fiel -Package $pac).ok 'relatar os achados do pacote passa'
 
     <#
@@ -260,12 +323,12 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
         Das duas falhas possíveis esta é a pior. Achado inventado faz alguém
         olhar a máquina à toa; achado apagado faz ninguém olhar.
     #>
-    $menos = New-Data '{"summary":"x","notVerified":"y","changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a","action":"b"}]}'
+    $menos = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a","action":"b"}]}'
     $fm = Test-WMLaudoFindings -Laudo $menos -Package $pac
     Assert-True (-not $fm.ok) 'omitir um achado do pacote é rejeitado'
     Assert-True ((@($fm.omitted) -join ' ') -match 'R-DISK-SPACE-LOW') 'e o achado apagado é nominado'
 
-    $nenhum = New-Data '{"summary":"A maquina esta saudavel e nao ha nada a fazer.","notVerified":"y","changedSinceLast":"","observations":[],"findings":[]}'
+    $nenhum = New-Data '{"summary":"A maquina esta saudavel e nao ha nada a fazer.","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[]}'
     $fz = Test-WMLaudoFindings -Laudo $nenhum -Package $pac
     Assert-True (-not $fz.ok) 'apagar TODOS os achados é rejeitado'
     Assert-Equal 2 (@($fz.omitted).Count) 'e os dois são nominados'
@@ -276,7 +339,7 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
         ocorrências de uma regra do que o pacote trouxe — é inflar achado com
         um ruleId que passa no teste de pertinência.
     #>
-    $inflado = New-Data '{"summary":"x","notVerified":"y","changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a","action":"b"},{"ruleId":"R-GPU-TEMP-DRIFT","reading":"c","action":"d"}]}'
+    $inflado = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a","action":"b"},{"ruleId":"R-GPU-TEMP-DRIFT","reading":"c","action":"d"}]}'
     $f2 = Test-WMLaudoFindings -Laudo $inflado -Package $pac
     Assert-True (-not $f2.ok) 'duplicar um achado que o pacote trouxe uma vez é rejeitado'
 
@@ -301,7 +364,7 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     Assert-True (Test-WMLaudoFindings -Laudo $inflado -Package $pacD).ok 'duas placas, mesma regra duas vezes: passa'
 
     # Achado sem ruleId nenhum não escapa por omissão.
-    $semId = New-Data '{"summary":"x","notVerified":"y","changedSinceLast":"","observations":[],"findings":[{"ruleId":"","reading":"a","action":"b"}]}'
+    $semId = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"","reading":"a","action":"b"}]}'
     Assert-True (-not (Test-WMLaudoFindings -Laudo $semId -Package $pac).ok) 'achado sem ruleId é rejeitado'
 
     # =====================================================================
@@ -311,7 +374,7 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
         O laudo que o mistral:latest devolveu de verdade, e que passou nas três
         guardas anteriores: lacuna calada e hipótese sobre o que ninguém mediu.
     #>
-    $mistral = New-Data '{"summary":"Avaliado como normal.","notVerified":"","changedSinceLast":"Nenhum","findings":[],"observations":["A temperatura do GPU parece estar um pouco acima da média normal durante o uso pesado."]}'
+    $mistral = New-Data '{"summary":"Avaliado como normal.","notVerified":[],"changedSinceLast":"Nenhum","findings":[],"observations":["A temperatura do GPU parece estar um pouco acima da média normal durante o uso pesado."]}'
 
     $s1 = Test-WMLaudoShape -Laudo $mistral -Package $pacV
     Assert-True (-not $s1.ok) 'o laudo real do mistral é rejeitado'
@@ -324,50 +387,71 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     Assert-True (Test-WMLaudoFindings -Laudo $mistral -Package $pacV).ok  'a de achados deixava passar'
 
     # Cada obrigação isolada, para que uma não mascare a outra.
-    $soLacuna = New-Data '{"summary":"x","notVerified":"","changedSinceLast":"","findings":[],"observations":[]}'
+    $soLacuna = New-Data '{"summary":"x","notVerified":[],"changedSinceLast":"","findings":[],"observations":[]}'
     $s2 = Test-WMLaudoShape -Laudo $soLacuna -Package $pacV
     Assert-True (-not $s2.ok) 'cobertura incompleta com notVerified vazio é rejeitada'
     Assert-True ((@($s2.missing) -join ' ') -match 'notVerified') 'e a razão nomeia o campo'
 
-    # Espaço em branco não conta como declaração.
-    $branco = New-Data '{"summary":"x","notVerified":"   ","changedSinceLast":"","findings":[],"observations":[]}'
-    Assert-True (-not (Test-WMLaudoShape -Laudo $branco -Package $pacV).ok) 'notVerified só com espaço não declara nada'
+    # Entrada sem ruleId não declara lacuna nenhuma.
+    $branco = New-Data '{"summary":"x","notVerified":[{"ruleId":"","note":"algo"}],"changedSinceLast":"","findings":[],"observations":[]}'
+    Assert-True (-not (Test-WMLaudoShape -Laudo $branco -Package $pacV).ok) 'entrada sem ruleId não declara nada'
 
     # notVerified nomeia a lacuna: assim a única falha que resta é a hipótese.
-    $soHipotese = New-Data '{"summary":"x","notVerified":"R-CPU-TEMP-SPEC ficou sem fonte","changedSinceLast":"","findings":[],"observations":["a placa talvez esteja quente"]}'
+    $soHipotese = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"},{"ruleId":"R-GPU-TEMP-SPEC-3080","note":"n"}],"changedSinceLast":"","findings":[],"observations":["a placa talvez esteja quente"]}'
     $s3 = Test-WMLaudoShape -Laudo $soHipotese -Package $pacV
     Assert-True (-not $s3.ok) 'hipótese sem nenhum achado no pacote é rejeitada'
     Assert-Equal 1 (@($s3.missing).Count) 'e só por essa razão'
 
     # O laudo correto para um pacote sem achados e cobertura incompleta.
-    $certo = New-Data '{"summary":"Nada mereceu atenção.","notVerified":"R-CPU-TEMP-SPEC ficou sem fonte.","changedSinceLast":"","findings":[],"observations":[]}'
+    $certo = New-Data '{"summary":"Nada mereceu atenção.","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"},{"ruleId":"R-GPU-TEMP-SPEC-3080","note":"n"}],"changedSinceLast":"","findings":[],"observations":[]}'
     Assert-True (Test-WMLaudoShape -Laudo $certo -Package $pacV).ok 'declarar a lacuna e não supor nada passa'
 
     # Com achados no pacote, hipótese é legítima — o campo não vira letra morta.
-    $comAchado = New-Data '{"summary":"x","notVerified":"R-CPU-TEMP-SPEC sem fonte","changedSinceLast":"","findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a","action":"b"}],"observations":["o calor pode vir do ambiente"]}'
+    $comAchado = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a","action":"b"}],"observations":["o calor pode vir do ambiente"]}'
     Assert-True (Test-WMLaudoShape -Laudo $comAchado -Package $pac).ok 'com achado, a hipótese continua permitida'
 
     # Cobertura COMPLETA não exige notVerified.
     $pacC = New-WMLaudoPackage -Findings $DOISGPU
-    $semLacuna = New-Data '{"summary":"x","notVerified":"","changedSinceLast":"","findings":[],"observations":[]}'
+    $semLacuna = New-Data '{"summary":"x","notVerified":[],"changedSinceLast":"","findings":[],"observations":[]}'
     Assert-True (Test-WMLaudoShape -Laudo $semLacuna -Package $pacC).ok 'cobertura completa não obriga a declarar lacuna'
 
     <#
-        PREENCHER O CAMPO NÃO É DECLARAR A LACUNA.
+        A DERROTA QUE ACABOU COM A PROSA NESTE CAMPO.
 
-        A guarda conferia não-branco, e a verificação adversarial mediu que '.',
-        '-', 'n/a', 'nada' e até "Tudo foi verificado." satisfaziam a obrigação.
-        O comentário da função dizia que o lema "lacuna declarada nunca vira tudo
-        certo" só vale se alguém CONFERIR que ela foi declarada — e a conferência
-        era de não-branco.
+        A guarda passou a exigir que o texto NOMEASSE uma lacuna. O verificador
+        adversarial respondeu nomeando e NEGANDO na mesma frase:
+
+          "R-CPU-TEMP-SPEC foi verificada e está normal. R-GPU-TEMP-DRIFT também
+           foi conferida e nada indica problema. Tudo foi verificado."
+
+        Aprovado e apresentado. A frase "Tudo foi verificado." sozinha era
+        rejeitada; colada atrás de um identificador, passava. Não existe
+        conferência aritmética de negação em prosa, e denylist de "foi
+        verificada" / "está normal" / "nada indica" é corrida perdida contra um
+        gerador de frases.
+
+        Por isso o campo deixou de ser prosa. Estes testes fixam a nova regra:
+        é lista de identificadores, e tem de COBRIR TODAS as lacunas do pacote.
     #>
-    foreach ($vazio in '.', '-', 'n/a', 'nada', 'Tudo foi verificado.') {
-        $l = New-Data (('{"summary":"x","notVerified":"TEXTO","changedSinceLast":"","findings":[],"observations":[]}').Replace('TEXTO', $vazio))
-        Assert-True (-not (Test-WMLaudoShape -Laudo $l -Package $pacV).ok) "notVerified '$vazio' não declara lacuna nenhuma"
-    }
+    $negando = New-Data '{"summary":"x","notVerified":"R-CPU-TEMP-SPEC foi verificada e esta normal. Tudo foi verificado.","changedSinceLast":"","findings":[],"observations":[]}'
+    Assert-True (-not (Test-WMLaudoShape -Laudo $negando -Package $pacV).ok) 'prosa que nomeia a lacuna e a nega não declara nada'
 
-    $l = New-Data '{"summary":"x","notVerified":"R-CPU-TEMP-SPEC ficou sem fonte primaria.","changedSinceLast":"","findings":[],"observations":[]}'
-    Assert-True (Test-WMLaudoShape -Laudo $l -Package $pacV).ok 'nomear a lacuna do pacote passa'
+    $l = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"},{"ruleId":"R-GPU-TEMP-SPEC-3080","note":"n"}],"changedSinceLast":"","findings":[],"observations":[]}'
+    Assert-True (Test-WMLaudoShape -Laudo $l -Package $pacV).ok 'declarar a lacuna como identificador passa'
+
+    <#
+        E COBRIR TODAS: o pacote $pacV tem duas lacunas (R-CPU-TEMP-SPEC em
+        unsourced e R-GPU-TEMP-SPEC-3080 em noData). Declarar só uma deixava o
+        modelo escolher qual lacuna existe.
+    #>
+    $meia = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","findings":[],"observations":[]}'
+    $pacDuas = New-WMLaudoPackage -Findings (New-Data '{"v":1,"window":"2026-08-15","host":"T","verdict":"normal","findings":[],"coverage":{"complete":false,"evaluated":[],"unsourced":{"R-CPU-TEMP-SPEC":"x"},"malformed":{},"noData":{"R-GPU-TEMP-SPEC-3080":"y"},"noBaseline":{},"notApplicable":{}}}')
+    $sm = Test-WMLaudoShape -Laudo $meia -Package $pacDuas
+    Assert-True (-not $sm.ok) 'declarar só uma de duas lacunas é rejeitado'
+    Assert-True ((@($sm.missing) -join ' ') -match 'R-GPU-TEMP-SPEC-3080') 'e a lacuna calada é nominada'
+
+    $ambas = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"},{"ruleId":"R-GPU-TEMP-SPEC-3080","note":"n"}],"changedSinceLast":"","findings":[],"observations":[]}'
+    Assert-True (Test-WMLaudoShape -Laudo $ambas -Package $pacDuas).ok 'declarar as duas passa'
 
     # coverage.complete como STRING "false" desligava a guarda inteira.
     $pacStr = $pacV | ConvertTo-Json -Depth 12 | ConvertFrom-Json

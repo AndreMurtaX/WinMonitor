@@ -205,6 +205,22 @@ function Get-WMStringsDeep {
     O modelo escrevendo "RTX 3080" continua passando. O modelo escrevendo "103
     graus" vira órfão e derruba o laudo, que é o comportamento que se quer.
 #>
+<#
+    Um pedaço de texto que é IDENTIFICADOR e não pode ser medida.
+
+    O critério é ter letra e dígito juntos: 'i9-11900K', 'MP600',
+    'ST10000NM001G-2MW103'. Nenhuma temperatura, percentual ou contagem se
+    escreve assim, então remover isso do texto não abre porta nenhuma.
+
+    Só dígito NÃO é identificador, por mais que venha do hardware: '98', '103'
+    e '3080' são exatamente o que um modelo escreveria como medida inventada.
+#>
+function Test-WMIdentifierToken {
+    param([string]$Token)
+    if ([string]::IsNullOrWhiteSpace($Token)) { return $false }
+    ($Token -match '\d') -and ($Token -match '\p{L}')
+}
+
 function Get-WMHardwarePhrases {
     param($Hardware)
 
@@ -213,13 +229,21 @@ function Get-WMHardwarePhrases {
 
     foreach ($texto in (Get-WMStringsDeep -Node $Hardware)) {
         if ([string]::IsNullOrWhiteSpace($texto)) { continue }
-        [void]$frases.Add($texto)
 
         $tokens = @($texto -split '\s+' | Where-Object { $_ })
 
+        <#
+            A string INTEIRA só entra se ela própria obedecer ao critério. Antes
+            entrava incondicionalmente, e isso reabria o buraco que a função
+            existe para fechar: um campo de hardware cujo valor é só dígito —
+            'disks[].id' vale "98" numa máquina com dez discos — virava frase
+            sozinho e liberava 98 como temperatura. Medido.
+        #>
+        if ($tokens.Count -ge 2 -or (Test-WMIdentifierToken $texto)) { [void]$frases.Add($texto) }
+
         foreach ($t in $tokens) {
             # Misto letra+dígito: identificador, não medida. Sai sozinho.
-            if ($t -match '\d' -and $t -match '[A-Za-z]') { [void]$frases.Add($t) }
+            if (Test-WMIdentifierToken $t) { [void]$frases.Add($t) }
         }
 
         # Sequências de 2+ tokens: é o que permite "RTX 3080" sem permitir "3080".
@@ -353,14 +377,52 @@ function Get-WMSpelledNumbers {
     #>
     $padrao = "(?i)\b(?:$alt)(?:\s+e\s+(?:$alt))*\b"
 
-    foreach ($m in [regex]::Matches($Text, $padrao)) {
+    <#
+        'por cento' NÃO é o número cem. É a unidade percentual, e a leitura
+        ingênua injetava um 100 fantasma em qualquer laudo que escrevesse
+        "2 por cento de uso" — recusando texto honesto. Percentual é a unidade
+        mais natural de um relatório de espaço em disco, então isso não é caso
+        de borda.
+    #>
+    $semPorCento = [regex]::Replace($Text, '(?i)\bpor\s+cento\b', ' ')
+
+    foreach ($m in [regex]::Matches($semPorCento, $padrao)) {
         $partes = @($m.Value.ToLowerInvariant() -split '\s+e\s+' | ForEach-Object { $_.Trim() })
-        $total = 0
-        $valeu = $false
+
+        <#
+            A soma só vale para numeral COMPOSTO de verdade: centena, depois
+            dezena, depois unidade, sempre em magnitude decrescente. 'noventa e
+            cinco' é 95; 'entre dois e três dias' NÃO é 5 — são dois numerais
+            distintos ligados por uma conjunção comum, e somá-los inventava um
+            órfão em prosa honesta.
+        #>
+        $classe = { param($p)
+            if ($cem.Contains($p))  { return 3 }
+            if ($dez.Contains($p))  { return 2 }
+            if ($unid.Contains($p)) { return 1 }
+            0
+        }
+        $valor = { param($p)
+            if ($cem.Contains($p))  { return [int]$cem[$p] }
+            if ($dez.Contains($p))  { return [int]$dez[$p] }
+            if ($unid.Contains($p)) { return [int]$unid[$p] }
+            0
+        }
+
+        $total    = 0
+        $anterior = 99
+        $valeu    = $false
         foreach ($p in $partes) {
-            if ($cem.Contains($p))       { $total += [int]$cem[$p];  $valeu = $true }
-            elseif ($dez.Contains($p))   { $total += [int]$dez[$p];  $valeu = $true }
-            elseif ($unid.Contains($p))  { $total += [int]$unid[$p]; $valeu = $true }
+            $c = & $classe $p
+            if ($c -eq 0) { continue }
+            if ($c -ge $anterior) {
+                # Magnitude não decresceu: acabou o numeral composto.
+                if ($valeu) { [pscustomobject]@{ value = $total; text = $m.Value } }
+                $total = 0; $valeu = $false; $anterior = 99
+            }
+            $total += (& $valor $p)
+            $anterior = $c
+            $valeu = $true
         }
         if ($valeu) { [pscustomobject]@{ value = $total; text = $m.Value } }
     }
@@ -397,9 +459,23 @@ function Test-WMLaudoNumbers {
     # entra aqui, só acompanhado, e é isso que impede o nome de virar medida.
     foreach ($f in (Get-WMHardwarePhrases -Hardware $Package.hardware)) { [void]$literais.Add($f) }
 
-    # Do mais longo para o mais curto: senão um prefixo come o token maior.
+    <#
+        Do mais longo para o mais curto: senão um prefixo come o token maior.
+
+        E ANCORADO EM FRONTEIRA DE PALAVRA, que foi um vazamento medido: a frase
+        "11 Pro" sai de "Microsoft Windows 11 Pro" no host.json real, e sem
+        âncora ela casava o começo de "11 processos" — apagando um 11 que o
+        modelo inventou. Ponta a ponta, "havia 11 processos travados" era
+        APROVADO e "havia 11 travamentos" era reprovado; a diferença era só a
+        palavra depois do dígito.
+
+        Lookaround em vez de \b porque muitos literais começam ou terminam em
+        caractere não-alfanumérico — 'sto.volFreeGB.C:.min', 'Intel(R)' — e \b
+        não se comporta na borda desses.
+    #>
     foreach ($lit in (@($literais | Where-Object { $_ }) | Sort-Object { $_.Length } -Descending)) {
-        $limpo = $limpo -replace [regex]::Escape($lit), ' '
+        $padrao = '(?<![\w])' + [regex]::Escape($lit) + '(?![\w])'
+        $limpo = [regex]::Replace($limpo, $padrao, ' ', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
     }
     # Datas e horas em qualquer formato ISO.
     $limpo = [regex]::Replace($limpo, '\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?', ' ')
@@ -444,7 +520,18 @@ function Test-WMLaudoNumbers {
 
     foreach ($m in [regex]::Matches($limpo, '\d+(?:[.,]\d+)?(?:[eE][+-]?\d+)?')) {
         $n = ConvertTo-WMNumber ($m.Value -replace ',', '.')
-        if ($null -eq $n) { continue }
+        <#
+            Token que o regex casou e o conversor recusou vira ÓRFÃO, não é
+            descartado. O '\d' do .NET casa dígito Unicode — largura inteira,
+            indo-arábico — e ConvertTo-WMNumber, que é invariante, recusa.
+            O 'continue' que havia aqui jogava fora em silêncio exatamente o
+            token mais suspeito do texto: um número escrito de forma que a
+            conferência não sabe ler.
+        #>
+        if ($null -eq $n) {
+            if (-not $orfaos.Contains($m.Value)) { [void]$orfaos.Add($m.Value) }
+            continue
+        }
         & $confere ([double]$n) $m.Value
     }
 
@@ -491,7 +578,16 @@ function Test-WMLaudoRuleIds {
     }
 
     $inventados = New-Object System.Collections.ArrayList
-    foreach ($m in [regex]::Matches($Text, '(?i)\bR[-_][A-Z0-9_-]{2,}\b')) {
+    <#
+        Letra COM acento no conjunto: 'R-MEMÓRIA-VAZANDO' escapava inteira,
+        porque \b não fecha fronteira entre 'M' e 'Ó' e o padrão não casava
+        nada. Num laudo em português essa é a grafia provável — a guarda só
+        funcionava enquanto o modelo não acentuasse.
+
+        \p{L} em vez de A-Z pela mesma razão, e as âncoras viram lookaround
+        porque \b é definido em cima de \w e volta a falhar na borda acentuada.
+    #>
+    foreach ($m in [regex]::Matches($Text, '(?i)(?<![\p{L}\d])R[-_][\p{L}\d_-]{2,}(?![\p{L}\d])')) {
         $id = $m.Value.TrimEnd('-', '_')
         if (-not $conhecidos.Contains($id) -and -not $inventados.Contains($id)) { [void]$inventados.Add($id) }
     }
@@ -525,7 +621,9 @@ As regras que aparecem em coverage NÃO são achados. Elas são regras que não 
 
 Há uma conferência automática que compara o seu findings com o do pacote e rejeita o laudo inteiro nos DOIS sentidos: se você acrescentar um achado que não veio, e se você deixar de relatar um que veio. Apagar é a falha mais grave das duas — achado inventado faz alguém olhar a máquina à toa; achado apagado faz ninguém olhar.
 
-O campo notVerified precisa NOMEAR pelo menos uma das lacunas que o pacote lista em coverage. Escrever "nada" ou "-" preenche o campo sem declarar coisa alguma, e é rejeitado igual a deixá-lo vazio.
+O campo notVerified é uma LISTA, e ela tem de conter TODAS as lacunas que o pacote lista em coverage — uma entrada por regra, com o ruleId exato. Não é você que escolhe quais menciona.
+
+Em note, ao lado de cada id, escreva o que a falta daquela verificação significa na prática para quem lê. O que não cabe em note é dizer que a regra foi verificada, ou que está normal, ou que nada indica problema: ela está nessa lista precisamente porque NINGUÉM olhou. Afirmar o contrário ali é a pior frase que este laudo pode conter.
 
 NÚMEROS
 Todo número que você escrever precisa vir do pacote. Não calcule médias, não estime, não converta unidades, não arredonde para números "redondos" que não estão lá. Um número que não veio do pacote é invenção, e há uma conferência automática que rejeita o laudo por isso.
@@ -559,7 +657,11 @@ function Get-WMLaudoSchema {
                                    "action": {"type":"string"} },
                    "required": ["ruleId","reading","action"],
                    "additionalProperties": false } },
-    "notVerified":      { "type": "string" },
+    "notVerified":  { "type": "array", "items": { "type": "object",
+                       "properties": { "ruleId": {"type":"string"},
+                                       "note": {"type":"string"} },
+                       "required": ["ruleId","note"],
+                       "additionalProperties": false } },
     "changedSinceLast": { "type": "string" },
     "observations":     { "type": "array", "items": { "type": "string" } }
   },
@@ -743,21 +845,49 @@ function Test-WMLaudoShape {
         $lacunas = New-Object System.Collections.ArrayList
         foreach ($b in 'unsourced', 'malformed', 'noData', 'noBaseline', 'notApplicable') {
             foreach ($k in (Get-WMNodeKeys (Get-WMNodeChild $Package.coverage $b))) {
-                [void]$lacunas.Add(([string]$k -split '#')[0])
+                $id = ([string]$k -split '#')[0]
+                if (-not $lacunas.Contains($id)) { [void]$lacunas.Add($id) }
             }
         }
-        $texto = [string]$Laudo.notVerified
 
-        if ([string]::IsNullOrWhiteSpace($texto)) {
-            [void]$faltas.Add('cobertura incompleta e notVerified vazio: o laudo calou o que não foi verificado')
-        } elseif ($lacunas.Count -gt 0) {
-            $citou = $false
-            foreach ($l in $lacunas) {
-                if ($texto.IndexOf($l, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $citou = $true; break }
-            }
-            if (-not $citou) {
-                [void]$faltas.Add("notVerified não nomeia nenhuma das lacunas do pacote ($($lacunas.Count) existem): preencher o campo não é declarar a lacuna")
-            }
+        <#
+            AQUI A PROSA FOI ABOLIDA, e a razão é uma derrota medida.
+
+            A versão anterior exigia que o texto NOMEASSE uma lacuna. O
+            verificador respondeu com:
+
+              "R-CPU-TEMP-SPEC foi verificada e está normal. R-GPU-TEMP-DRIFT
+               também foi conferida e nada indica problema. Tudo foi verificado."
+
+            Aprovado e apresentado. Nomeava as lacunas — e negava cada uma. A
+            mesma frase "Tudo foi verificado." sozinha era rejeitada; colada
+            atrás de um identificador, passava.
+
+            Não existe conferência aritmética de negação em prosa livre, e
+            tentar denylist de "foi verificada", "está normal", "nada indica" é
+            perder a corrida contra um gerador de frases. Então o campo deixa de
+            ser prosa: notVerified passa a ser LISTA DE IDENTIFICADORES, e a
+            lista tem de cobrir TODAS as lacunas do pacote.
+
+            O modelo continua podendo comentar cada uma — em 'note', ao lado do
+            id. O que ele não pode mais é escolher quais lacunas menciona, nem
+            fazer a estrutura dizer o contrário do que a prosa diz: quem
+            renderiza o laudo imprime a lista sob o título NÃO VERIFICADO, e
+            essa é a afirmação que fica.
+
+            É a mesma lição dos achados, aplicada de novo: o que precisa ser
+            conferido não pode morar em texto corrido.
+        #>
+        $declaradas = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($n in @($Laudo.notVerified)) {
+            if ($null -eq $n) { continue }
+            $id = if ($n -is [string]) { [string]$n } else { [string]$n.ruleId }
+            if (-not [string]::IsNullOrWhiteSpace($id)) { [void]$declaradas.Add(($id -split '#')[0]) }
+        }
+
+        $faltando = @($lacunas | Where-Object { -not $declaradas.Contains($_) })
+        if ($faltando.Count -gt 0) {
+            [void]$faltas.Add("notVerified não declara $($faltando.Count) de $($lacunas.Count) lacunas do pacote: $($faltando -join ', ')")
         }
     }
 
@@ -775,8 +905,13 @@ function Test-WMLaudoShape {
 function Get-WMLaudoText {
     param([Parameter(Mandatory)]$Laudo)
     $partes = New-Object System.Collections.ArrayList
-    foreach ($c in 'summary', 'notVerified', 'changedSinceLast') {
+    foreach ($c in 'summary', 'changedSinceLast') {
         if ($Laudo.$c) { [void]$partes.Add([string]$Laudo.$c) }
+    }
+    foreach ($n in @($Laudo.notVerified)) {
+        if ($null -eq $n) { continue }
+        if ($n -is [string]) { [void]$partes.Add([string]$n) }
+        else { if ($n.note) { [void]$partes.Add([string]$n.note) } }
     }
     foreach ($a in @($Laudo.findings)) {
         foreach ($c in 'reading', 'action') { if ($a.$c) { [void]$partes.Add([string]$a.$c) } }
