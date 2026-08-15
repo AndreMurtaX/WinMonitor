@@ -257,7 +257,27 @@ function Invoke-WMRules {
     # uma tabela sem severityScale produziria uma escala de um item nulo e o
     # fallback nunca dispararia.
     $escala = @($Rules.severityScale | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-    if ($escala.Count -eq 0) { $escala = $script:WM_ESCALA_PADRAO }
+    $problemasConfig = New-Object System.Collections.ArrayList
+
+    <#
+        A escala é a ordem do veredito, e o motor confia nela inteiramente.
+        Uma escala invertida faria máquina sã reportar a severidade máxima com
+        zero achados, e uma com duplicatas tornaria a ordenação ambígua. É
+        falha ruidosa e não silenciosa — mas ruidosa e errada continua errada.
+
+        Escala inválida NÃO derruba a avaliação: cai para a padrão e o
+        problema fica declarado na saída, pelo mesmo princípio que vale para as
+        regras — o que não pôde ser usado precisa aparecer.
+    #>
+    if ($escala.Count -eq 0) {
+        if (@($Rules.severityScale).Count -gt 0) {
+            [void]$problemasConfig.Add('severityScale só continha itens vazios; usando a escala padrão')
+        }
+        $escala = $script:WM_ESCALA_PADRAO
+    } elseif (@($escala | Sort-Object -Unique).Count -ne $escala.Count) {
+        [void]$problemasConfig.Add("severityScale tem itens repetidos ($($escala -join ', ')); a ordenação seria ambígua. Usando a escala padrão.")
+        $escala = $script:WM_ESCALA_PADRAO
+    }
 
     $textoHardware = ''
     if ($Hardware) {
@@ -402,6 +422,8 @@ function Invoke-WMRules {
         window   = $Rollup.day
         host     = $Rollup.host
         verdict  = $veredito
+        severityScale  = @($escala)
+        configProblems = @($problemasConfig)
         findings = @($achados)
         coverage = [ordered]@{
             <#

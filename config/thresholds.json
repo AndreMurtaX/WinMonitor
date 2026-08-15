@@ -85,7 +85,7 @@
       "delta": 6,
       "source": {
         "kind": "policy",
-        "text": "Seis graus na mesma faixa de carga. Nao e fato de hardware, e a sensibilidade escolhida - e o ruido termico REAL desta maquina ainda NAO foi medido, porque nao ha linha-base congelada. Uma versao anterior deste texto justificava o valor com um desvio-padrao de ~0,5 C: aquele numero veio da fixture sintetica de teste, cujo ruido e uniforme entre -1 e +1 C sem nenhum outlier, e ruido de gerador nao descreve hardware. O 6 C fica como ponto de partida defensavel pela ordem de grandeza (deriva termica por poeira ou pasta ressecada costuma ser de varios graus, nao de decimos) e DEVE ser revisado contra o ruido medido assim que houver linha-base. Baixar aumenta alarme falso; subir atrasa a deteccao.",
+        "text": "Seis graus na mesma faixa de carga. Nao e fato de hardware, e a sensibilidade escolhida - e o ruido termico REAL desta maquina ainda NAO foi medido, porque nao ha linha-base congelada. Uma versao anterior deste texto justificava o valor com um desvio-padrao de ~0,5 C: aquele numero veio da fixture sintetica de teste, cujo ruido e uniforme entre -1 e +1 C sem nenhum outlier, e ruido de gerador nao descreve hardware. O 6 C fica como ponto de partida, apoiado numa unica premissa que tambem nao tem citacao e esta declarada como premissa: ASSUME-SE que deriva termica por poeira ou pasta ressecada se manifesta em varios graus, nao em decimos. Se essa premissa estiver errada, o valor esta errado junto. DEVE ser revisado contra o ruido medido assim que houver linha-base. Baixar aumenta alarme falso; subir atrasa a deteccao.",
         "url": "",
         "verifiedAt": "2026-08-15"
       }

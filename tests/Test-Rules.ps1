@@ -377,6 +377,61 @@ try {
     Assert-Equal 0 $rcw.findings.Count 'colchete no modelo não vira classe de caracteres'
 
     # =====================================================================
+    Start-TestGroup 'A escala do arquivo governa também o caso sem achado  [MUTAÇÃO]'
+
+    # Máquina sã numa escala personalizada: o veredito base é o PRIMEIRO item
+    # da escala declarada, não a palavra 'normal' embutida no código.
+    $escalaPropriaFria = '{"severityScale":["calmo","urgente"],"rules":[' +
+                         '{"id":"R-F","kind":"absolute","subsystem":"gpu","claim":"c",' +
+                         '"metric":"gpu.0.tempCAllDay.max","operator":"gt","value":500,"severity":"urgente",' + $FONTE_OK + '}]}'
+    $rf = Invoke-WMRules -Rollup $ROLLUP -Rules (New-Rules $escalaPropriaFria) -Hardware $HW
+    Assert-Equal 0 $rf.findings.Count 'nenhum achado (94 não passa de 500)'
+    Assert-Equal 'calmo' $rf.verdict  'e o veredito é o primeiro item da escala DECLARADA'
+    Assert-True  $rf.coverage.complete 'com cobertura completa'
+
+    <#
+        Escala inválida não pode derrubar a avaliação nem passar calada: cai
+        para a padrão e o problema fica declarado, pelo mesmo princípio que
+        vale para as regras.
+    #>
+    $escalaRepetida = '{"severityScale":["normal","agir","agir"],"rules":[' +
+                      '{"id":"R-R","kind":"absolute","subsystem":"gpu","claim":"c",' +
+                      '"metric":"gpu.0.tempCAllDay.max","operator":"gt","value":50,"severity":"agir",' + $FONTE_OK + '}]}'
+    $rr = Invoke-WMRules -Rollup $ROLLUP -Rules (New-Rules $escalaRepetida) -Hardware $HW
+    Assert-Equal 1 @($rr.configProblems).Count 'escala com item repetido é reportada como problema de configuração'
+    Assert-True (@($rr.configProblems)[0] -match 'repetidos') 'dizendo o quê'
+    Assert-Equal 'normal' $rr.severityScale[0] 'e a escala usada volta a ser a padrão'
+    Assert-Equal 1 $rr.findings.Count 'sem derrubar a avaliação'
+
+    $rSemProblema = Invoke-WMRules -Rollup $ROLLUP -Rules (New-Rules ($molde -replace '%SEV%','parar')) -Hardware $HW
+    Assert-Equal 0 @($rSemProblema.configProblems).Count 'tabela sã não reporta problema de configuração'
+
+    # =====================================================================
+    Start-TestGroup 'Detalhes que estavam corretos e indefesos  [MUTAÇÃO]'
+
+    # appliesTo é insensível a caixa: o nome vem do driver e a grafia varia.
+    foreach ($grafia in 'NVIDIA GeForce RTX 3080', 'nvidia geforce rtx 3080', 'NVIDIA GEFORCE RTX 3080') {
+        $hwG = New-Data ('{"gpus":["' + $grafia + '"]}')
+        $rg = Invoke-WMRules -Rollup $ROLLUP -Rules (New-Rules $so3080b) -Hardware $hwG
+        Assert-Equal 1 $rg.findings.Count "appliesTo casa com a grafia '$grafia'"
+    }
+
+    <#
+        Com curinga, a lacuna de linha-base precisa dizer QUAL instância ficou
+        sem referência. Indexada só pela regra, a segunda GPU sobrescreveria a
+        primeira e a informação de qual placa se perderia.
+    #>
+    $baseSoGpu0 = New-Data '{"profile":{"gpu":{"0":{"tempCByLoad":{"b75":{"p95":78}}}}}}'
+    $duasFaixas = New-Data ('{"day":"d","host":"T","gpu":{' +
+                            '"0":{"tempCByLoad":{"b75":{"p95":86}}},' +
+                            '"1":{"tempCByLoad":{"b75":{"p95":70}}}}}')
+    $rnb = Invoke-WMRules -Rollup $duasFaixas -Rules (New-Rules ('{"rules":[' + $relativa + ']}')) -Baseline $baseSoGpu0 -Hardware $HW
+    Assert-Equal 1 $rnb.findings.Count 'a GPU 0, que tem referência, é avaliada e dispara'
+    $chavesNb = @(Get-WMNodeKeys $rnb.coverage.noBaseline)
+    Assert-Equal 1 $chavesNb.Count 'e a GPU 1 aparece como sem referência'
+    Assert-True ($chavesNb[0] -match 'gpu\.1\.') 'com a chave nomeando QUAL placa ficou sem linha-base'
+
+    # =====================================================================
     Start-TestGroup 'Os valores da tabela publicada'
 
     <#
