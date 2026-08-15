@@ -125,6 +125,51 @@ function New-WMLaudoPackage {
     Sem as contagens, uma frase correta como "três achados" seria acusada de
     fabricação.
 #>
+<#
+    Todo número que aparece em um nó do pacote, inclusive os EMBUTIDOS EM TEXTO.
+
+    Existe por causa de uma reprovação real na primeira execução: o laudo citou
+    "RTX 3080" e a conferência acusou 3080 como número inventado. Ele estava no
+    pacote — dentro de "NVIDIA GeForce RTX 3080" — mas a remoção de literais
+    exige a string INTEIRA, e ninguém escreve o nome completo quando o curto
+    basta. Mesma coisa com 750 de "Intel(R) UHD Graphics 750".
+
+    Vale só para o bloco de hardware, e a distinção importa: número em NOME DE
+    PEÇA é citável, número em CAMINHO DE MÉTRICA não é. Se isto rodasse sobre as
+    séries, o 75 de b75 e o 95 de p95 virariam medidas permitidas e a guarda
+    passaria a aceitar exatamente o tipo de fabricação que ela existe para pegar
+    — 95 foi um dos números que o modelo inventou naquela mesma execução.
+#>
+function Get-WMNumbersDeep {
+    param($Node, [int]$Depth = 0)
+
+    if ($null -eq $Node -or $Depth -gt 6) { return }
+
+    if ($Node -is [string]) {
+        foreach ($m in [regex]::Matches($Node, '\d+(?:\.\d+)?')) { $m.Value }
+        return
+    }
+    if ($Node -is [bool]) { return }
+    if ($Node -is [ValueType]) { $Node; return }
+
+    <#
+        Dicionário ANTES de IEnumerable: IDictionary também é IEnumerable, e
+        cair no ramo de lista faria o nó ser percorrido como DictionaryEntry —
+        arrastando junto os dígitos dos NOMES DE CHAVE. Só os valores entram.
+    #>
+    if ($Node -is [System.Collections.IDictionary]) {
+        foreach ($k in $Node.Keys) { Get-WMNumbersDeep -Node $Node[$k] -Depth ($Depth + 1) }
+        return
+    }
+    if ($Node -is [System.Collections.IEnumerable]) {
+        foreach ($item in $Node) { Get-WMNumbersDeep -Node $item -Depth ($Depth + 1) }
+        return
+    }
+    foreach ($k in (Get-WMNodeKeys $Node)) {
+        Get-WMNumbersDeep -Node (Get-WMNodeChild $Node $k) -Depth ($Depth + 1)
+    }
+}
+
 function Get-WMAllowedNumbers {
     param([Parameter(Mandatory)]$Package)
 
@@ -144,8 +189,22 @@ function Get-WMAllowedNumbers {
         }
     }
 
+    <#
+        Hardware: além dos campos numéricos, os números EMBUTIDOS nos nomes de
+        identificação — 3080 em "NVIDIA GeForce RTX 3080", 750 em "Intel UHD
+        Graphics 750", 11900 no nome da CPU.
+
+        Sem isto, um laudo que cita corretamente o modelo da placa é acusado de
+        inventar número: a remoção de literais exige a string inteira, e ninguém
+        escreve "NVIDIA GeForce RTX 3080" quando "RTX 3080" basta. Aconteceu na
+        primeira execução real.
+
+        Nome de hardware é citável; caminho de métrica NÃO entra aqui — os
+        números de gpu.0.tempCByLoad.b75.p95 continuam sendo removidos do texto
+        pela lista de literais, e não viram medida permitida.
+    #>
     if ($Package.hardware) {
-        foreach ($k in (Get-WMNodeKeys $Package.hardware)) { Add-N (Get-WMNodeChild $Package.hardware $k) }
+        foreach ($n in (Get-WMNumbersDeep -Node $Package.hardware)) { Add-N $n }
     }
 
     # --- contagens derivadas -------------------------------------------------
@@ -289,5 +348,200 @@ function Test-WMLaudoRuleIds {
     }
 }
 
+# ------------------------------------------------------- instrução ---------
+
+<#
+    O que o modelo recebe como instrução de sistema.
+
+    Vive aqui, no módulo, e não solto no driver: é texto versionado que decide
+    comportamento, e merece o mesmo tratamento de um limiar.
+#>
+function Get-WMLaudoSystemPrompt {
+    @'
+Você recebe um pacote fechado com o resultado de uma verificação automática de saúde de uma máquina Windows. Sua tarefa é escrever o laudo para uma pessoa.
+
+O QUE VOCÊ PODE DISCUTIR
+Somente os Achados presentes no pacote e as lacunas listadas em coverage. Nada mais. Você não tem acesso à máquina, ao dado bruto nem à tabela de limiares — se não está no pacote, você não sabe.
+
+ACHADO É SÓ O QUE ESTÁ EM findings
+O campo findings do seu laudo tem de conter exatamente os achados que vieram em findings no pacote, cada um com o mesmo ruleId. Se o pacote veio com findings vazio, o seu findings vai vazio — não há o que relatar, e isso é uma resposta legítima.
+
+As regras que aparecem em coverage NÃO são achados. Elas são regras que não puderam ser avaliadas, e a única coisa a dizer sobre elas é que ficaram sem verificação, no campo notVerified. Transformar uma delas em achado é afirmar um problema que ninguém mediu. Se você não recebeu o valor, isso não é um achado sem valor: é a ausência de um achado.
+
+Há uma conferência automática que compara o seu findings com o do pacote e rejeita o laudo inteiro se você acrescentar algum.
+
+NÚMEROS
+Todo número que você escrever precisa vir do pacote. Não calcule médias, não estime, não converta unidades, não arredonde para números "redondos" que não estão lá. Um número que não veio do pacote é invenção, e há uma conferência automática que rejeita o laudo por isso.
+
+O VEREDITO NÃO É SEU
+Ele já foi calculado por regras determinísticas e vai no laudo de qualquer forma. Não o repita, não o contradiga, não o requalifique.
+
+COBERTURA
+Se coverage.complete for falso, o laudo PRECISA dizer o que não foi verificado, no campo próprio. "Nenhum achado" com cobertura incompleta não significa máquina saudável, e o texto não pode sugerir que signifique.
+
+OBSERVAÇÕES
+Você pode acrescentar hipóteses — correlações entre achados, causas prováveis — mas apenas no campo observations, e cada uma redigida como o palpite que é. Nunca apresente hipótese como achado.
+
+Uma hipótese é sobre um achado que existe. Se o pacote veio sem achados, observations vai vazio: não há correlação a levantar nem causa a supor. Escrever "a placa parece um pouco quente" sem nenhuma temperatura no pacote não é hipótese, é invenção com verbo no condicional — e é rejeitada igual.
+
+COMO ESCREVER
+Português do Brasil, direto, sem jargão desnecessário. Primeiro o significado, depois o número: "a placa está 8 graus mais quente sob a mesma carga" antes de "p95 de 86 °C". Uma pessoa técnica que não acompanhou nada deve entender em uma leitura. Não elogie a máquina, não tranquilize além do que o dado sustenta, e não use exclamação.
+'@
+}
+
+# Esquema da resposta. Sem 'verdict': ele é determinístico e o driver o anexa.
+function Get-WMLaudoSchema {
+    @'
+{
+  "type": "object",
+  "properties": {
+    "summary":   { "type": "string" },
+    "findings":  { "type": "array", "items": { "type": "object",
+                   "properties": { "ruleId": {"type":"string"},
+                                   "reading": {"type":"string"},
+                                   "action": {"type":"string"} },
+                   "required": ["ruleId","reading","action"],
+                   "additionalProperties": false } },
+    "notVerified":      { "type": "string" },
+    "changedSinceLast": { "type": "string" },
+    "observations":     { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["summary","findings","notVerified","changedSinceLast","observations"],
+  "additionalProperties": false
+}
+'@ | ConvertFrom-Json
+}
+
+<#
+    Terceira conferência: os ACHADOS do laudo têm de ser os achados do pacote.
+
+    POR QUE ELA EXISTE — uma reprovação real, e o que ela quase deixou passar.
+    O pacote de 2026-08-15 tinha ZERO achados e veredito 'normal'. O modelo
+    devolveu isto:
+
+        ruleId : R-GPU-TEMP-SPEC-3080
+        reading: A temperatura da RTX 3080 está acima do especificado.
+        action : O valor não foi fornecido no pacote.
+
+    Ele SABIA que não tinha dado, e emitiu o achado assim mesmo. As duas
+    guardas anteriores não o pegam:
+
+      - Test-WMLaudoNumbers confere NÚMEROS. Esse achado não tem número. Ele só
+        foi rejeitado porque OUTRA frase do laudo trazia um número inventado —
+        sorte, não defesa. Com o resto do texto limpo, seria APRESENTADO.
+      - Test-WMLaudoRuleIds roda sobre a prosa, e R-GPU-TEMP-SPEC-3080 é uma
+        regra legítima de citar: está em coverage como não avaliada. E o ruleId
+        estruturado nem chega a entrar no texto que ela examina.
+
+    A distinção que faltava: regra que aparece em coverage é CITÁVEL — o laudo
+    precisa poder dizer "esta não pôde ser avaliada" — mas nunca é ACHADO.
+    Achado é só o que as regras concluíram, e isso é um conjunto fechado.
+
+    A contagem também é conferida: com duas placas, a mesma regra pode gerar
+    dois achados de verdade. O que não pode é o laudo devolver mais achados de
+    uma regra do que o pacote trouxe.
+#>
+function Test-WMLaudoFindings {
+    param(
+        [Parameter(Mandatory)]$Laudo,
+        [Parameter(Mandatory)]$Package
+    )
+
+    $doPacote = @{}
+    foreach ($a in @($Package.findings)) {
+        $id = [string]$a.ruleId
+        if (-not $doPacote.ContainsKey($id)) { $doPacote[$id] = 0 }
+        $doPacote[$id]++
+    }
+
+    $inventados = New-Object System.Collections.ArrayList
+    $vistos     = @{}
+    foreach ($a in @($Laudo.findings)) {
+        $id = [string]$a.ruleId
+        if ([string]::IsNullOrWhiteSpace($id)) { [void]$inventados.Add('(achado sem ruleId)'); continue }
+        if (-not $vistos.ContainsKey($id)) { $vistos[$id] = 0 }
+        $vistos[$id]++
+
+        if (-not $doPacote.ContainsKey($id)) {
+            [void]$inventados.Add($id)
+        } elseif ($vistos[$id] -gt $doPacote[$id]) {
+            [void]$inventados.Add("$id (x$($vistos[$id]), o pacote trouxe $($doPacote[$id]))")
+        }
+    }
+
+    [pscustomobject]@{
+        ok       = ($inventados.Count -eq 0)
+        invented = @($inventados)
+    }
+}
+
+<#
+    Quarta conferência: as obrigações de forma que o pacote impõe ao laudo.
+
+    Também nasceu de execução real. O mistral:latest passou nas três guardas
+    anteriores e devolveu isto:
+
+      notVerified : ""                          (com coverage.complete = falso)
+      observations: ["A temperatura do GPU parece estar um pouco acima da média
+                     normal durante o uso pesado..."]
+
+    Duas falhas distintas, e nenhuma das guardas anteriores toca em qualquer uma:
+
+    1. LACUNA CALADA. A cobertura estava incompleta e o campo que existe para
+       dizer o que ficou sem verificar veio vazio. É o pior modo de falhar deste
+       projeto inteiro: um laudo silencioso sobre a própria ignorância lê-se como
+       "está tudo bem". "Lacuna declarada nunca vira 'tudo certo'" só vale se
+       alguém CONFERIR que ela foi declarada.
+
+    2. INVENÇÃO REALOCADA. O pacote não tinha nenhum achado — logo nenhuma
+       temperatura, nenhuma série. Ainda assim o laudo afirmou que a placa parece
+       quente. Sem número, a guarda aritmética dorme; em observations, a guarda
+       de achados dorme. O campo que eu abri para hipótese virou a porta da
+       invenção.
+
+       A regra que fecha isso vem da definição do próprio campo: observations são
+       "correlações entre achados e causas prováveis". Sem achado não há
+       correlação entre achados nem causa provável de achado — então não há
+       observação legítima a fazer. Pacote sem achados, observations vazio.
+#>
+function Test-WMLaudoShape {
+    param(
+        [Parameter(Mandatory)]$Laudo,
+        [Parameter(Mandatory)]$Package
+    )
+
+    $faltas = New-Object System.Collections.ArrayList
+
+    $incompleta = ($Package.coverage -and -not $Package.coverage.complete)
+    if ($incompleta -and [string]::IsNullOrWhiteSpace([string]$Laudo.notVerified)) {
+        [void]$faltas.Add('cobertura incompleta e notVerified vazio: o laudo calou o que não foi verificado')
+    }
+
+    if (@($Package.findings).Count -eq 0 -and @($Laudo.observations).Count -gt 0) {
+        [void]$faltas.Add('pacote sem achados e observations preenchido: hipótese sobre o que ninguém mediu')
+    }
+
+    [pscustomobject]@{
+        ok      = ($faltas.Count -eq 0)
+        missing = @($faltas)
+    }
+}
+
+# Junta os campos de texto do laudo num só bloco, para a conferência numérica.
+function Get-WMLaudoText {
+    param([Parameter(Mandatory)]$Laudo)
+    $partes = New-Object System.Collections.ArrayList
+    foreach ($c in 'summary', 'notVerified', 'changedSinceLast') {
+        if ($Laudo.$c) { [void]$partes.Add([string]$Laudo.$c) }
+    }
+    foreach ($a in @($Laudo.findings)) {
+        foreach ($c in 'reading', 'action') { if ($a.$c) { [void]$partes.Add([string]$a.$c) } }
+    }
+    foreach ($o in @($Laudo.observations)) { if ($o) { [void]$partes.Add([string]$o) } }
+    $partes -join "`n"
+}
+
 Export-ModuleMember -Function `
-    New-WMLaudoPackage, Get-WMAllowedNumbers, Test-WMLaudoNumbers, Test-WMLaudoRuleIds
+    New-WMLaudoPackage, Get-WMAllowedNumbers, Test-WMLaudoNumbers, Test-WMLaudoRuleIds,
+    Test-WMLaudoFindings, Test-WMLaudoShape,
+    Get-WMLaudoSystemPrompt, Get-WMLaudoSchema, Get-WMLaudoText

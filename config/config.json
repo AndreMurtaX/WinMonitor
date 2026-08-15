@@ -24,7 +24,41 @@
     "rollup": "data\\rollup",
     "baseline": "data\\baseline",
     "findings": "data\\findings",
+    "laudo": "data\\laudo",
     "logs": "logs"
+  },
+
+  "laudo": {
+    "_comment": [
+      "provider: qual provedor usar. 'ollama' e local e gratuito, bom para teste;",
+      "'claude' e remoto e nao compete por VRAM com a carga que o monitor mede -",
+      "o que importa nesta maquina, que hospeda agentes de IA na propria GPU.",
+      "maxRetries: quantas vezes reapresentar o laudo ao modelo quando a",
+      "conferencia numerica acusa fabricacao, dizendo quais numeros sobraram."
+    ],
+    "provider": "ollama",
+    "maxRetries": 1,
+    "claude": {
+      "model": "claude-opus-5",
+      "maxTokens": 16000,
+      "effort": "medium",
+      "timeoutSec": 300
+    },
+    "ollama": {
+      "_comment": [
+        "mistral:latest e nao gemma3:4b por medida, nao por preferencia: em",
+        "execucao real contra o pacote de 2026-08-15 (zero achados, veredito",
+        "normal) o gemma3:4b inventou achados nas duas tentativas, todas as",
+        "vezes. O mistral passou nas quatro conferencias. Nenhum dos dois",
+        "escreve bem - o texto sai mecanico, listando identificador de regra.",
+        "As guardas compram correcao, nao eloquencia; para o laudo de producao",
+        "o provedor remoto continua sendo a escolha defensavel."
+      ],
+      "model": "mistral:latest",
+      "endpoint": "http://localhost:11434",
+      "numCtx": 16384,
+      "timeoutSec": 600
+    }
   },
 
   "loadBands": [
