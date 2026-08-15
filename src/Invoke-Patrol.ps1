@@ -90,7 +90,7 @@ try {
 
     if (-not $NoWrite) {
         $dir  = Confirm-WMDirectory (Get-WMPath $cfg.paths.patrol)
-        $file = Join-Path $dir ('{0}.jsonl' -f (Get-Date -Format 'yyyy-MM-dd'))
+        $file = Join-Path $dir ('{0}.jsonl' -f (Get-WMDayId))
         [void](Write-WMJsonLine -Path $file -Object $sample)
 
         # Retenção aplicada na escrita. Faxina agendada é faxina que um dia não

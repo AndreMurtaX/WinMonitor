@@ -83,6 +83,10 @@ param(
     [string]$OutFile
 )
 
+if ($IdleMin -ge $IdleMax) {
+    throw "IdleMin ($IdleMin) precisa ser menor que IdleMax ($IdleMax). Invertidos, Get-Random emite um erro não-terminante por amostra e o dia sai com carga zero sem que nada reclame."
+}
+
 Get-Random -SetSeed $Seed | Out-Null
 
 # ------------------------------------------------------- perfil de carga ----

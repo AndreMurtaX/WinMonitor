@@ -94,11 +94,25 @@ function Get-WMSecrets {
 
 # ------------------------------------------------------------------- tempo ---
 
-# ISO 8601 com deslocamento de fuso. Sem fuso, uma série histórica mente
-# duas vezes por ano no horário de verão.
+<#
+    ISO 8601 com deslocamento de fuso. Sem fuso, uma série histórica mente duas
+    vezes por ano no horário de verão.
+
+    CULTURA INVARIANTE, sempre. Sem ela, 'yyyy' usa o CALENDÁRIO da cultura
+    corrente: numa máquina th-TH o ano sai budista e o carimbo vira
+    2569-08-15, e num Windows ar-SA sai o calendário Hijri. O padrão do formato
+    continua casando, então nada reclama — a série histórica simplesmente passa
+    a ser de outro planeta.
+#>
 function Get-WMTimestamp {
     param([datetime]$When = (Get-Date))
-    $When.ToString('yyyy-MM-ddTHH:mm:ss.fffzzz')
+    $When.ToString('yyyy-MM-ddTHH:mm:ss.fffzzz', [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+# Identificador de dia (nome de arquivo diário). Mesmo motivo: calendário fixo.
+function Get-WMDayId {
+    param([datetime]$When = (Get-Date))
+    $When.ToString('yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
 }
 
 # --------------------------------------------------------------------- log ---
@@ -111,7 +125,7 @@ function Write-WMLog {
     )
     try {
         $dir  = Confirm-WMDirectory (Get-WMPath 'logs')
-        $file = Join-Path $dir ('{0}.log' -f (Get-Date -Format 'yyyy-MM-dd'))
+        $file = Join-Path $dir ('{0}.log' -f (Get-WMDayId))
         $line = '{0} [{1}] {2}: {3}' -f (Get-WMTimestamp), $Level.ToUpper(), $Source, $Message
         $enc  = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::AppendAllText($file, $line + [Environment]::NewLine, $enc)
@@ -334,5 +348,5 @@ function Invoke-WMRetention {
 
 Export-ModuleMember -Function `
     Get-WMRoot, Get-WMPath, Confirm-WMDirectory, Get-WMConfig, Get-WMSecrets,
-    Get-WMTimestamp, Write-WMLog, Write-WMJsonLine, Invoke-WMProcess,
+    Get-WMTimestamp, Get-WMDayId, Write-WMLog, Write-WMJsonLine, Invoke-WMProcess,
     Get-WMHostFacts, Invoke-WMProbe, Invoke-WMRetention

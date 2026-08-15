@@ -39,7 +39,7 @@ if (-not (Test-Path -LiteralPath $rawDir)) {
 }
 
 $DAY_RE = '^\d{4}-\d{2}-\d{2}$'
-$today  = Get-Date -Format 'yyyy-MM-dd'
+$today  = Get-WMDayId
 
 $files = @(
     Get-ChildItem -LiteralPath $rawDir -Filter '*.jsonl' -File |

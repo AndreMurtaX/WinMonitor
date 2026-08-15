@@ -119,6 +119,26 @@ function Add-BlindGpuDay {
     [System.IO.File]::WriteAllLines((Join-Path $Proj "data\patrol\$Day.jsonl"), $l, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+<#
+    Dia de máquina com DUAS GPUs: a principal trabalha, a secundária (uma
+    integrada, ou uma placa só de vídeo) nunca sai do ócio. É a configuração
+    mais comum em servidor e desktop, e a que expôs uma linha-base impossível.
+#>
+function Add-TwoGpuDay {
+    param([string]$Proj, [string]$Day, [int]$Samples = 200)
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $l = @()
+    for ($i = 0; $i -lt $Samples; $i++) {
+        $alta = (($i -ge 5 -and $i -lt 25) -or ($i -ge 105 -and $i -lt 125))
+        $u    = $(if ($alta) { 90 } else { 5 })
+        $t0   = $(if ($alta) { 79 } else { 42 })
+        $up   = (100 + $i / 60.0).ToString('0.00', $inv)
+        $l += ('{{"v":1,"host":"FIXTURE-HOST","at":"{0}T{1:D2}:{2:D2}:00.000-03:00","mode":"patrol","upH":{3},"cpu":{{"util":{4},"mhz":4800}},"gpu":[{{"idx":0,"util":{4},"tempC":{5}}},{{"idx":1,"util":3,"tempC":38}}],"cov":{{"ok":[],"gap":{{}}}}}}' -f `
+              $Day, [int]($i / 60), ($i % 60), $up, $u, $t0)
+    }
+    [System.IO.File]::WriteAllLines((Join-Path $Proj "data\patrol\$Day.jsonl"), $l, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 try {
 
     # =====================================================================
@@ -302,6 +322,36 @@ try {
     # Sem motivo declarado, não congela.
     $s7 = & (Join-Path $p3 'src\New-Baseline.ps1') 3>&1 2>&1 | Out-String
     Assert-True (Test-Saida $s7 'Reason') 'linha-base sem motivo é recusada'
+
+    # =====================================================================
+    Start-TestGroup 'New-Baseline: segunda GPU ociosa NÃO impede a linha-base'
+
+    <#
+        A correção da guarda de faixa exigia b75 de TODAS as GPUs, o que criava
+        um impasse permanente: uma integrada ou uma secundária ociosa nunca
+        passa de 75%, e a máquina ficava sem conseguir congelar referência
+        nenhuma mesmo com a GPU principal completa. Basta uma placa com
+        referência; as demais ficam registradas.
+    #>
+    $p10 = New-TempProject
+    foreach ($d in $d14) { Add-TwoGpuDay $p10 $d -Samples 200 }
+    & (Join-Path $p10 'src\Invoke-Rollup.ps1') | Out-Null
+    & (Join-Path $p10 'src\New-Baseline.ps1') -Reason 'duas gpus, a segunda ociosa' 3>&1 2>&1 | Out-Null
+
+    $b10 = Read-Json (Join-Path $p10 'data\baseline\baseline.json')
+    Assert-NotNull $b10 'a linha-base congela com a GPU principal referenciada'
+    Assert-NotNull $b10.profile.gpu.'0'.tempCByLoad.b75 'a GPU 0 tem faixa de carga alta'
+    Assert-Null    $b10.profile.gpu.'1'.tempCByLoad.b75 'a GPU 1, sempre ociosa, não tem'
+    Assert-Equal 1 @($b10.evidence.gpusWithoutReference).Count 'e fica registrado que uma GPU ficou sem referência'
+    Assert-Equal '1' @($b10.evidence.gpusWithoutReference)[0] 'nomeando qual'
+
+    # Mas se NENHUMA GPU tiver referência, continua recusando.
+    $p11 = New-TempProject
+    foreach ($d in $d14) { Add-BlindGpuDay $p11 $d -Samples 200 }
+    & (Join-Path $p11 'src\Invoke-Rollup.ps1') | Out-Null
+    $s11 = & (Join-Path $p11 'src\New-Baseline.ps1') -Reason 'nenhuma gpu com referencia' 3>&1 2>&1 | Out-String
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $p11 'data\baseline\baseline.json'))) 'nenhuma GPU com referência ainda é recusa'
+    Assert-True (Test-Saida $s11 'nenhuma GPU') 'e a recusa diz exatamente isso'
 
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue

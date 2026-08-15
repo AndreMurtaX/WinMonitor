@@ -415,8 +415,25 @@ try {
     $altaLin  = $rLin.gpu['0'].tempCByLoad['b75'].p95 - $rBase.gpu['0'].tempCByLoad['b75'].p95
     "      modelo continuo:  b00 {0,5:N1} C   b75 {1,5:N1} C" -f $baixaLin, $altaLin
     ""
-    Assert-LessThan    $baixaLin 2.0 'mesmo contínua, a degradação quase não aparece em repouso'
-    Assert-GreaterThan $altaLin  6.0 'e aparece inteira sob carga'
+    <#
+        A asserção é sobre a RAZÃO entre as faixas, não sobre graus absolutos.
+
+        A afirmação física é "sala quente move as duas faixas igualmente;
+        refrigeração degradando move quase só a alta" — isso é uma proporção, e
+        vale em qualquer escala de degradação. Codificar como limiar absoluto
+        ("b00 < 2,0 °C") amarra o teste ao coeficiente escolhido: com uma
+        degradação de 24 °C em vez de 8, a asserção quebraria sem que a tese
+        tivesse deixado de valer.
+    #>
+    $razaoSala   = $baixaSala  / $altaSala
+    $razaoRefrig = $baixaRefrig / $altaRefrig
+    $razaoLin    = $baixaLin    / $altaLin
+    "      razao b00/b75:  sala {0,5:N2}   refrig degrau {1,5:N2}   refrig continua {2,5:N2}" -f $razaoSala, $razaoRefrig, $razaoLin
+    ""
+    Assert-GreaterThan $razaoSala   0.80 'sala quente move as duas faixas na mesma proporção'
+    Assert-LessThan    $razaoRefrig 0.25 'refrigeração degradando move quase só a faixa alta'
+    Assert-LessThan    $razaoLin    0.25 'e isso vale também com degradação contínua'
+    Assert-GreaterThan $altaLin     6.0  'a degradação contínua aparece inteira sob carga'
 
     <#
         O regime em que a tese NÃO se aplica, afirmado em vez de escondido:
@@ -501,6 +518,23 @@ try {
     Assert-Null    $r2g.gpu['1'].tempCByLoad['b75'] 'a GPU 1, sempre ociosa, não tem'
     Assert-Equal 78 $r2g.gpu['0'].tempCByLoad['b75'].p50 'e cada uma fica com a SUA temperatura'
     Assert-Equal 40 $r2g.gpu['1'].tempCByLoad['b00'].p50 'sem misturar com a outra'
+
+    # GPU ausente em algumas amostras: a série de temperatura precisa preservar
+    # o buraco tanto quanto a de carga.
+    $f2b = Join-Path $tmp '2026-04-09.jsonl'
+    $l2b = @()
+    for ($i = 0; $i -lt 6; $i++) {
+        if ($i -lt 4) {
+            $l2b += ('{{"v":1,"host":"FIXTURE-HOST","at":"2026-04-09T0{0}:00:00.000-03:00","mode":"patrol","upH":100,"gpu":[{{"idx":0,"util":10,"tempC":4{0}}}],"cov":{{"ok":[],"gap":{{}}}}}}' -f $i)
+        } else {
+            $l2b += ('{{"v":1,"host":"FIXTURE-HOST","at":"2026-04-09T0{0}:00:00.000-03:00","mode":"patrol","upH":100,"cov":{{"ok":[],"gap":{{"gpu":"sonda morta"}}}}}}' -f $i)
+        }
+    }
+    [System.IO.File]::WriteAllLines($f2b, $l2b, (New-Object System.Text.UTF8Encoding($false)))
+    $r2b = New-WMDayRollup -Path $f2b -DayId '2026-04-09' -Bands $bands
+    Assert-Equal 4 $r2b.gpu['0'].tempCAllDay.n    'só as amostras com GPU contam na temperatura'
+    Assert-Equal 2 $r2b.gpu['0'].tempCAllDay.gaps 'e as duas ausências ficam registradas como lacuna'
+    Assert-Equal 2 $r2b.gpu['0'].util.gaps        'idem na série de carga'
 
     # =====================================================================
     Start-TestGroup 'Ordem dos arquivos não inventa reinício  [MUTAÇÃO]'

@@ -60,7 +60,7 @@ $rollDir = Get-WMPath $cfg.paths.rollup
 $baseDir = Confirm-WMDirectory (Get-WMPath $cfg.paths.baseline)
 
 $DAY_RE = '^\d{4}-\d{2}-\d{2}$'
-$today  = Get-Date -Format 'yyyy-MM-dd'
+$today  = Get-WMDayId
 
 # ------------------------------------------------------------- a janela -----
 
@@ -190,21 +190,31 @@ function Test-FaixaAlta {
 $temFaixaAlta = $false
 $motivoFalta  = ''
 
+$gpusSemRef = @()
+
 if ($perfil.gpu -and $perfil.gpu.Count -gt 0) {
     <#
-        Havendo GPU, a referência térmica DELA é obrigatória. O b75 da CPU não
-        substitui: uma versão anterior aceitava esse atalho e congelou uma
-        linha-base cuja GPU só tinha a faixa ociosa — a referência que o projeto
-        existe para produzir simplesmente não estava lá, e o arquivo se
-        declarava íntegro.
+        Havendo GPU, a referência térmica de GPU é obrigatória — o b75 da CPU
+        não substitui. Uma versão anterior aceitava esse atalho e congelava uma
+        linha-base cuja GPU só tinha a faixa ociosa.
+
+        Mas exigir a faixa alta de TODAS as placas é estrito demais e cria um
+        impasse permanente: uma integrada, uma placa só de vídeo ou uma
+        secundária ociosa nunca passa de 75%, e a linha-base ficaria impossível
+        numa máquina cuja GPU principal tem a referência completa.
+
+        Basta UMA com referência. As demais ficam registradas em
+        evidence.gpusWithoutReference, para a camada de parecer saber que não
+        tem contra o que comparar aquelas — em vez de descobrir isso tarde e
+        comparar contra nada.
     #>
-    $semB75 = @()
+    $comB75 = @()
     foreach ($idx in $perfil.gpu.Keys) {
-        if (-not (Test-FaixaAlta $perfil.gpu[$idx].tempCByLoad)) { $semB75 += $idx }
+        if (Test-FaixaAlta $perfil.gpu[$idx].tempCByLoad) { $comB75 += $idx } else { $gpusSemRef += $idx }
     }
-    $temFaixaAlta = ($semB75.Count -eq 0)
+    $temFaixaAlta = ($comB75.Count -gt 0)
     if (-not $temFaixaAlta) {
-        $motivoFalta = "a(s) GPU(s) [$($semB75 -join ', ')] não têm medida de temperatura na faixa de carga alta"
+        $motivoFalta = "nenhuma GPU tem medida de temperatura na faixa de carga alta"
     }
 } elseif (Test-FaixaAlta $perfil.cpu.mhzByLoad) {
     $temFaixaAlta = $true
@@ -247,6 +257,9 @@ $baseline = [ordered]@{
         highLoadRuns     = $runs
         daysWithoutRollup = $semRollup
         minSamplesPerDay = $MinSamplesPerDay
+        # GPUs que nunca chegaram à faixa de carga alta nesta janela: ficam sem
+        # referência térmica, e quem for comparar precisa saber disso.
+        gpusWithoutReference = $gpusSemRef
     }
     profile   = $perfil
 }
@@ -259,7 +272,7 @@ $target = Join-Path $baseDir 'baseline.json'
 # ao longo do tempo é ela própria um registro de manutenção da máquina.
 if (Test-Path -LiteralPath $target) {
     $archDir = Confirm-WMDirectory (Join-Path $baseDir 'archive')
-    $stamp   = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $stamp   = (Get-Date).ToString('yyyyMMdd-HHmmss', [System.Globalization.CultureInfo]::InvariantCulture)
     Move-Item -LiteralPath $target -Destination (Join-Path $archDir "baseline-$stamp.json") -Force
     "linha-base anterior arquivada em baseline\archive\baseline-$stamp.json"
 }
@@ -275,4 +288,7 @@ Write-WMLog -Source 'baseline' -Message "linha-base congelada ($($windowIds[0]).
 "  carga   : {0} janela(s) de carga alta na evidência" -f $runs
 "  motivo  : $Reason"
 "  arquivo : $target"
+if ($gpusSemRef.Count -gt 0) {
+    Write-Warning ("GPU(s) [{0}] nunca passaram de 75% de carga nesta janela e ficaram SEM referência térmica. Comparações futuras não terão contra o que medi-las. Registrado em evidence.gpusWithoutReference." -f ($gpusSemRef -join ', '))
+}
 if ($baseline.forced) { Write-Warning 'Congelada com -Force sobre dado insuficiente. A referência carrega essa fraqueza, registrada em forced=true.' }
