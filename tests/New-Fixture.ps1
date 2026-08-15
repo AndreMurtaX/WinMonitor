@@ -39,7 +39,19 @@ param(
     [int]$Bursts = 10,
     [int]$BurstLen = 20,
     [double]$ThermalOffsetHigh = 0,
+    <#
+        Somado a TODAS as amostras, não só às de carga alta.
+
+        É o contraste que torna a estratificação insubstituível: sala quente
+        desloca a curva inteira, refrigeração degradando desloca só a ponta de
+        carga alta. Qualquer estatística do dia (máximo, p95) vê a MESMA subida
+        nos dois casos e não sabe dizer qual aconteceu. A visão por faixa sabe.
+    #>
+    [double]$ThermalOffsetAll = 0,
     [switch]$GpuAntiCorrelated,
+    [int]$RebootAt = -1,
+    [int]$ThrottleFrom = -1,
+    [int]$ThrottleCount = 0,
     [switch]$EdgeBurstStart,
     [switch]$EdgeBurstEnd,
     [ValidateSet('', 'cpu', 'mem', 'sto', 'gpu')][string]$DropProbe = '',
@@ -47,6 +59,9 @@ param(
     [int]$DropCount = 0,
     [switch]$NoThrottleFields,
     [int]$Seed = 20260101,
+    # NÃO renomear para $Host: é variável automática do PowerShell, e nomes de
+    # variável aqui são case-insensitive. Já custou um script morto neste projeto.
+    [string]$MachineName = 'FIXTURE-HOST',
     [string]$OutFile
 )
 
@@ -96,16 +111,24 @@ for ($i = 0; $i -lt $Samples; $i++) {
     $dropping = ($i -ge $DropFrom -and $i -le $dropTo -and $DropProbe -ne '')
 
     $gpuTemp = 35.0 + $gl * 0.45 + (Get-Random -Minimum -10 -Maximum 11) / 10.0
+    $gpuTemp += $ThermalOffsetAll
     if ($gl -ge 75) { $gpuTemp += $ThermalOffsetHigh }
 
     $cpuMhz = 3504 * (0.55 + $cl / 100.0 * 0.90)
 
+    # Uptime reinicia: o agregado tem que detectar o reinício no meio do dia.
+    $up = 100 + $i / 60.0
+    if ($RebootAt -ge 0 -and $i -ge $RebootAt) { $up = ($i - $RebootAt) / 60.0 }
+
+    $throttling = ($ThrottleCount -gt 0 -and $ThrottleFrom -ge 0 -and
+                   $i -ge $ThrottleFrom -and $i -lt ($ThrottleFrom + $ThrottleCount))
+
     $sample = [ordered]@{
         v    = 1
-        host = 'FIXTURE-HOST'
+        host = $MachineName
         at   = $t0.AddMinutes($i).ToString('yyyy-MM-ddTHH:mm:ss.fffzzz')
         mode = 'patrol'
-        upH  = [math]::Round(100 + $i / 60.0, 2)
+        upH  = [math]::Round($up, 2)
     }
 
     $ok  = New-Object System.Collections.ArrayList
@@ -161,9 +184,10 @@ for ($i = 0; $i -lt $Samples; $i++) {
         }
         # Modo degradado: sem a máscara, os campos de contenção não existem.
         if (-not $NoThrottleFields) {
-            $g.thrMask    = '0x1'
-            $g.thr        = @('GpuIdle')
-            $g.thrThermal = ($gpuTemp -gt 83)
+            $termico      = ($throttling -or $gpuTemp -gt 83)
+            $g.thrMask    = $(if ($termico) { '0x40' } else { '0x1' })
+            $g.thr        = $(if ($termico) { @('HwThermalSlowdown') } else { @('GpuIdle') })
+            $g.thrThermal = $termico
             $g.thrHard    = $false
         }
         $sample.gpu = @($g)

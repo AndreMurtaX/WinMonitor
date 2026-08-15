@@ -143,6 +143,24 @@ estatística do dia "não se move um décimo", apoiada num teste que comparava a
 mesma fixture, o p95 do dia movia os mesmos 8 °C. A tese é verdadeira no regime
 que importa; a demonstração é que estava errada.
 
+### O caso em que só a estratificação resolve
+
+O argumento acima mostra que a visão por faixa é mais *sensível*. O que a torna
+**insubstituível** é outro caso: distinguir duas causas que produzem exatamente
+a mesma subida em qualquer número não-estratificado.
+
+```
+                          sala quente   refrigeração degradando
+  máximo do dia               8 °C          8 °C     <- iguais: não distingue
+  faixa ociosa  (b00)         8 °C          0 °C     <- aqui está a diferença
+  faixa de carga (b75)        8 °C          8 °C
+```
+
+Ar-condicionado quebrado desloca a curva inteira; dissipador entupido desloca só
+a ponta de carga alta. O máximo do dia dá a mesma resposta para os dois, e a
+ação necessária é completamente diferente. Só a comparação por faixa separa as
+duas — e é isso que justifica o custo de manter o agregado estratificado.
+
 A linha-base se recusa a existir sobre dado insuficiente: exige 14 dias de ronda
 **e** 20 janelas de carga alta sustentada, ambos medidos dentro da mesma janela
 que será congelada, e recusa também se o perfil resultante não contiver a faixa

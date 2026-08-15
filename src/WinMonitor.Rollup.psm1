@@ -85,24 +85,45 @@ function Get-WMRound {
     PowerShell converte $null em 0.0 na ENTRADA, antes de qualquer filtro do
     corpo rodar, e ausência vira medida.
 #>
+<#
+    Percentil sobre um array JÁ ordenado de doubles.
+
+    Existe para que Get-WMStats ordene UMA vez e calcule p50 e p95 a partir do
+    mesmo array. A versão anterior ordenava três vezes por estatística — uma no
+    corpo e uma dentro de cada chamada a Get-WMPercentile — usando Sort-Object,
+    que empacota cada valor num PSObject. Numa janela de 14 dias isso dominava
+    o custo.
+#>
+function Get-WMPercentileSorted {
+    param([double[]]$Sorted, [double]$P)
+    if ($null -eq $Sorted -or $Sorted.Length -eq 0) { return $null }
+    if ($Sorted.Length -eq 1) { return $Sorted[0] }
+
+    $rank = ($P / 100.0) * ($Sorted.Length - 1)
+    $lo   = [int][math]::Floor($rank)
+    $hi   = [int][math]::Ceiling($rank)
+    if ($lo -eq $hi) { return $Sorted[$lo] }
+
+    $frac = $rank - $lo
+    $Sorted[$lo] * (1.0 - $frac) + $Sorted[$hi] * $frac
+}
+
 function Get-WMPercentile {
     param(
         [object[]]$Values,
         [Parameter(Mandatory)][ValidateRange(0, 100)][double]$P
     )
-    $clean = @($Values | ForEach-Object { ConvertTo-WMNumber $_ } | Where-Object { $null -ne $_ })
+    $clean = New-Object System.Collections.ArrayList
+    foreach ($v in $Values) {
+        $n = ConvertTo-WMNumber $v
+        if ($null -ne $n) { [void]$clean.Add($n) }
+    }
     if ($clean.Count -eq 0) { return $null }
 
-    $sorted = @($clean | Sort-Object)
-    if ($sorted.Count -eq 1) { return [double]$sorted[0] }
-
-    $rank = ($P / 100.0) * ($sorted.Count - 1)
-    $lo   = [int][math]::Floor($rank)
-    $hi   = [int][math]::Ceiling($rank)
-    if ($lo -eq $hi) { return [double]$sorted[$lo] }
-
-    $frac = $rank - $lo
-    [double]$sorted[$lo] * (1.0 - $frac) + [double]$sorted[$hi] * $frac
+    # [Array]::Sort sobre double[] em vez de Sort-Object: sem boxing.
+    $sorted = [double[]]$clean.ToArray()
+    [Array]::Sort($sorted)
+    Get-WMPercentileSorted -Sorted $sorted -P $P
 }
 
 <#
@@ -118,17 +139,23 @@ function Get-WMStats {
     $total = 0
     if ($null -ne $Values) { $total = $Values.Count }
 
-    $clean = @($Values | ForEach-Object { ConvertTo-WMNumber $_ } | Where-Object { $null -ne $_ })
+    $clean = New-Object System.Collections.ArrayList
+    foreach ($v in $Values) {
+        $n = ConvertTo-WMNumber $v
+        if ($null -ne $n) { [void]$clean.Add($n) }
+    }
     if ($clean.Count -eq 0) { return $null }
 
-    $sorted = @($clean | Sort-Object)
+    # Ordena UMA vez e tira os dois percentis do mesmo array.
+    $sorted = [double[]]$clean.ToArray()
+    [Array]::Sort($sorted)
 
     [ordered]@{
-        n    = $clean.Count
-        gaps = $total - $clean.Count
+        n    = $sorted.Length
+        gaps = $total - $sorted.Length
         min  = Get-WMRound $sorted[0] $Round
-        p50  = Get-WMRound (Get-WMPercentile -Values $clean -P 50) $Round
-        p95  = Get-WMRound (Get-WMPercentile -Values $clean -P 95) $Round
+        p50  = Get-WMRound (Get-WMPercentileSorted -Sorted $sorted -P 50) $Round
+        p95  = Get-WMRound (Get-WMPercentileSorted -Sorted $sorted -P 95) $Round
         max  = Get-WMRound $sorted[-1] $Round
     }
 }
@@ -230,8 +257,11 @@ function Get-WMLoadRuns {
     Agrega pares (carga, valor) em faixas, numa passada só.
 
     A versão anterior filtrava a lista inteira uma vez por faixa e chamava
-    Get-WMLoadBand dentro do filtro, custando O(faixas² × amostras): 40 s para
-    uma janela de 14 dias, e mais de 4 minutos para 90. Esta versão é O(amostras).
+    Get-WMLoadBand dentro do filtro, custando O(faixas² × amostras). Esta é
+    O(amostras) — mas isso vale para ESTA função, não para o módulo: a primeira
+    tentativa de otimização deixou o conjunto 3,2x MAIS lento de ponta a ponta,
+    porque o ganho aqui foi engolido por `+=` em array dentro dos laços que
+    montam os pares. Medir o todo, não a parte.
 
     $Dropped recebe quantos pares ficaram fora de qualquer faixa. Sem esse
     contador, carga fora de escala sumia em silêncio e nada reconciliava a soma
@@ -264,7 +294,21 @@ function Get-WMBandedStats {
     foreach ($id in $buckets.Keys) {
         if ($buckets[$id].Count -eq 0) { continue }
         $st = Get-WMStats -Values @($buckets[$id]) -Round $Round
-        if ($null -ne $st) { $out[$id] = $st }
+        if ($null -ne $st) {
+            $out[$id] = $st
+        } else {
+            <#
+                Houve amostras nesta faixa e NENHUMA delas era legível. Omitir a
+                faixa faria "dez minutos em carga alta sem termômetro" ficar
+                indistinguível de "não houve carga alta" — que é exatamente a
+                confusão que este projeto proíbe. A faixa aparece com zero
+                medidas e a contagem de lacunas.
+            #>
+            $out[$id] = [ordered]@{
+                n = 0; gaps = $buckets[$id].Count
+                min = $null; p50 = $null; p95 = $null; max = $null
+            }
+        }
     }
     if ($out.Count -eq 0) { return $null }
     $out
@@ -435,30 +479,60 @@ function New-WMDayRollup {
         $roll.reboots = $reb
     }
 
-    # ---- lacunas declaradas pelas próprias amostras ------------------------
-    $gapCount = [ordered]@{}
+    <#
+        Lacunas DECLARADAS pela ronda (sonda que falhou e disse que falhou).
+
+        Nome distinto de propósito: cada bloco de estatística também tem um
+        campo `gaps`, que significa outra coisa — buracos na série daquela
+        métrica. Os dois números coincidem às vezes e divergem no geral, e
+        chamá-los igual no mesmo JSON garantia que a camada de parecer
+        confundisse um com o outro.
+    #>
+    $probeGaps = [ordered]@{}
     foreach ($s in $all) {
         if ($s.cov -and $s.cov.gap) {
             foreach ($k in $s.cov.gap.PSObject.Properties.Name) {
-                if (-not $gapCount.Contains($k)) { $gapCount[$k] = 0 }
-                $gapCount[$k]++
+                if (-not $probeGaps.Contains($k)) { $probeGaps[$k] = 0 }
+                $probeGaps[$k]++
             }
         }
     }
-    $roll.gaps = $gapCount
+    $roll.probeGaps = $probeGaps
 
     # ---- CPU ---------------------------------------------------------------
-    $cpuUtil  = Get-WMSampleSeries -Samples $all -Selector { param($s) $s.cpu.util }
-    $cpuPairs = @()
-    foreach ($s in $all) {
-        $cpuPairs += , ([pscustomobject]@{ load = $s.cpu.util; value = $s.cpu.mhz })
+    # Uma passada só, e ArrayList em vez de `+=`: acrescentar a array em laço
+    # recopia o array inteiro a cada item, e foi o que fez a janela de 14 dias
+    # custar 130 s em vez de 40.
+    $cpuUtilAll = New-Object System.Collections.ArrayList
+    $cpuPairs   = New-Object System.Collections.ArrayList
+    $cpuBySeg   = @()
+
+    foreach ($seg in $segments) {
+        $segUtil = New-Object System.Collections.ArrayList
+        foreach ($s in $seg) {
+            $u = ConvertTo-WMNumber $s.cpu.util
+            [void]$segUtil.Add($u)
+            [void]$cpuUtilAll.Add($u)
+            [void]$cpuPairs.Add([pscustomobject]@{ load = $s.cpu.util; value = $s.cpu.mhz })
+        }
+        $cpuBySeg += , $segUtil.ToArray()
     }
+
+    $cpuRuns = $null
+    foreach ($ser in $cpuBySeg) {
+        $r = Get-WMLoadRuns -Series $ser -Threshold 75 -MinRun 3
+        if ($null -ne $r) {
+            if ($null -eq $cpuRuns) { $cpuRuns = 0 }
+            $cpuRuns += $r
+        }
+    }
+
     $cpuDrop = 0
     $roll.cpu = [ordered]@{
-        util         = Get-WMStats -Values $cpuUtil -Round 1
+        util         = Get-WMStats -Values $cpuUtilAll.ToArray() -Round 1
         mhzByLoad    = Get-WMBandedStats -Bands $Bands -Pairs $cpuPairs -Round 0 -Dropped ([ref]$cpuDrop)
         outOfBand    = $cpuDrop
-        highLoadRuns = Get-WMRunsBySegment -Segments $segments -Selector { param($s) $s.cpu.util }
+        highLoadRuns = $cpuRuns
     }
 
     # ---- memória -----------------------------------------------------------
@@ -511,86 +585,108 @@ function New-WMDayRollup {
                 ForEach-Object { [string]$_.idx } | Sort-Object -Unique)
 
     if ($gpuIds.Count -gt 0) {
-        $gpus = [ordered]@{}
+        $FIELDS = @('tempC', 'watts', 'coreMHz', 'fanPct')
+        $gpus   = [ordered]@{}
+
         foreach ($idx in $gpuIds) {
             $target = $idx
 
-            $pick = {
-                param($s)
-                foreach ($g in @($s.gpu)) { if ($null -ne $g -and [string]$g.idx -eq $target) { return $g } }
-                $null
-            }.GetNewClosure()
+            <#
+                UMA passada por GPU. A versão anterior invocava um scriptblock
+                de busca ~7 vezes por amostra (uma por série, uma por campo), e
+                invocação de scriptblock domina o custo em janelas de semanas.
+            #>
+            $utilAll = New-Object System.Collections.ArrayList
+            $tempAll = New-Object System.Collections.ArrayList
+            $pairs   = @{}
+            foreach ($f in $FIELDS) { $pairs[$f] = New-Object System.Collections.ArrayList }
+            $utilBySeg = @()
+            $thSeen = 0; $thTrue = 0; $hdSeen = 0; $hdTrue = 0
 
-            $utilSel = {
-                param($s)
-                $g = & $pick $s
-                if ($null -eq $g) { return $null }
-                $g.util
-            }.GetNewClosure()
+            foreach ($seg in $segments) {
+                $segUtil = New-Object System.Collections.ArrayList
+                foreach ($s in $seg) {
+                    $g = $null
+                    foreach ($cand in @($s.gpu)) {
+                        if ($null -ne $cand -and [string]$cand.idx -eq $target) { $g = $cand; break }
+                    }
+
+                    if ($null -eq $g) {
+                        # GPU ausente nesta amostra: buraco preservado nas duas
+                        # séries, para que a contagem de janelas tropece nele.
+                        [void]$segUtil.Add($null)
+                        [void]$utilAll.Add($null)
+                        [void]$tempAll.Add($null)
+                        continue
+                    }
+
+                    $u = ConvertTo-WMNumber $g.util
+                    [void]$segUtil.Add($u)
+                    [void]$utilAll.Add($u)
+                    [void]$tempAll.Add((ConvertTo-WMNumber $g.tempC))
+
+                    foreach ($f in $FIELDS) {
+                        [void]$pairs[$f].Add([pscustomobject]@{ load = $g.util; value = $g.$f })
+                    }
+
+                    <#
+                        Contenção térmica: a PRESENÇA do campo é rastreada
+                        separadamente do valor. FIELDS_MIN da sonda não inclui a
+                        máscara de contenção, então no modo degradado — que é
+                        justamente quando o driver está com problema — o campo
+                        nem existe. Contar isso como "não houve contenção"
+                        gravaria que a placa nunca se conteve por calor sobre
+                        dado que nunca foi medido.
+                    #>
+                    $names = $g.PSObject.Properties.Name
+                    if ($names -contains 'thrThermal' -and $null -ne $g.thrThermal) {
+                        $thSeen++
+                        if ($g.thrThermal -eq $true) { $thTrue++ }
+                    }
+                    if ($names -contains 'thrHard' -and $null -ne $g.thrHard) {
+                        $hdSeen++
+                        if ($g.thrHard -eq $true) { $hdTrue++ }
+                    }
+                }
+                $utilBySeg += , $segUtil.ToArray()
+            }
+
+            $runs = $null
+            foreach ($ser in $utilBySeg) {
+                $r = Get-WMLoadRuns -Series $ser -Threshold 75 -MinRun 3
+                if ($null -ne $r) {
+                    if ($null -eq $runs) { $runs = 0 }
+                    $runs += $r
+                }
+            }
 
             $entry = [ordered]@{
-                util         = Get-WMStats -Values (Get-WMSampleSeries -Samples $all -Selector $utilSel) -Round 1
-                highLoadRuns = Get-WMRunsBySegment -Segments $segments -Selector $utilSel
+                util         = Get-WMStats -Values $utilAll.ToArray() -Round 1
+                highLoadRuns = $runs
+                throttle     = [ordered]@{
+                    thermal         = $(if ($thSeen -eq 0) { $null } else { $thTrue })
+                    thermalMeasured = $thSeen
+                    hard            = $(if ($hdSeen -eq 0) { $null } else { $hdTrue })
+                    hardMeasured    = $hdSeen
+                }
             }
 
             <#
-                Contenção térmica: presença do campo é rastreada separadamente
-                do valor. FIELDS_MIN da sonda de GPU não inclui a máscara de
-                contenção — então, no modo degradado (exatamente quando o driver
-                está com problema), o campo simplesmente não existe. Contar isso
-                como "não houve contenção" grava que a placa nunca se conteve por
-                calor sobre dado que nunca foi medido.
-            #>
-            $thSeen = 0; $thTrue = 0; $hdSeen = 0; $hdTrue = 0
-            foreach ($s in $all) {
-                $g = & $pick $s
-                if ($null -eq $g) { continue }
-                $names = $g.PSObject.Properties.Name
-                if ($names -contains 'thrThermal' -and $null -ne $g.thrThermal) {
-                    $thSeen++
-                    if ($g.thrThermal -eq $true) { $thTrue++ }
-                }
-                if ($names -contains 'thrHard' -and $null -ne $g.thrHard) {
-                    $hdSeen++
-                    if ($g.thrHard -eq $true) { $hdTrue++ }
-                }
-            }
-            $entry.throttle = [ordered]@{
-                thermal         = $(if ($thSeen -eq 0) { $null } else { $thTrue })
-                thermalMeasured = $thSeen
-                hard            = $(if ($hdSeen -eq 0) { $null } else { $hdTrue })
-                hardMeasured    = $hdSeen
-            }
-
-            <#
-                tempCAllDay existe para uma finalidade só: permitir comparar a
-                estatística não-estratificada contra a estratificada, e assim
-                MEDIR o ganho da estratificação em vez de afirmá-lo. Nenhuma
+                tempCAllDay existe para uma finalidade só: permitir MEDIR o
+                ganho da estratificação em vez de afirmá-lo, comparando a
+                estatística não-estratificada contra a estratificada. Nenhuma
                 regra de diagnóstico deve usá-lo como base.
             #>
-            $tempSel = {
-                param($s)
-                $g = & $pick $s
-                if ($null -eq $g) { return $null }
-                $g.tempC
-            }.GetNewClosure()
-            $entry.tempCAllDay = Get-WMStats -Values (Get-WMSampleSeries -Samples $all -Selector $tempSel) -Round 1
+            $entry.tempCAllDay = Get-WMStats -Values $tempAll.ToArray() -Round 1
 
-            foreach ($f in 'tempC', 'watts', 'coreMHz', 'fanPct') {
-                $field = $f
-                $pairs = @()
-                foreach ($s in $all) {
-                    $g = & $pick $s
-                    if ($null -eq $g) { continue }
-                    $pairs += , ([pscustomobject]@{ load = $g.util; value = $g.$field })
-                }
+            foreach ($f in $FIELDS) {
                 $round = 1
-                if ($field -eq 'coreMHz') { $round = 0 }
+                if ($f -eq 'coreMHz') { $round = 0 }
                 $drop = 0
-                $banded = Get-WMBandedStats -Bands $Bands -Pairs $pairs -Round $round -Dropped ([ref]$drop)
+                $banded = Get-WMBandedStats -Bands $Bands -Pairs $pairs[$f] -Round $round -Dropped ([ref]$drop)
                 if ($null -ne $banded) {
-                    $entry["$($field)ByLoad"] = $banded
-                    if ($drop -gt 0) { $entry["$($field)OutOfBand"] = $drop }
+                    $entry["$($f)ByLoad"] = $banded
+                    if ($drop -gt 0) { $entry["$($f)OutOfBand"] = $drop }
                 }
             }
 
@@ -603,6 +699,6 @@ function New-WMDayRollup {
 }
 
 Export-ModuleMember -Function `
-    ConvertTo-WMNumber, Get-WMRound, Get-WMPercentile, Get-WMStats,
+    ConvertTo-WMNumber, Get-WMRound, Get-WMPercentile, Get-WMPercentileSorted, Get-WMStats,
     Test-WMBands, Get-WMLoadBand, Get-WMLoadRuns, Get-WMBandedStats,
     Read-WMPatrolDay, Get-WMSampleSeries, Get-WMRunsBySegment, New-WMDayRollup

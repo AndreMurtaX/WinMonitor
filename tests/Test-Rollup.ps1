@@ -164,8 +164,20 @@ try {
     # faria as duas metades se colarem e virarem carga sustentada que não houve.
     $fg = New-Day '2026-01-06' -Samples 200 -Bursts 0 -DropProbe cpu -DropFrom 50 -DropCount 5 -Seed 31
     $rg = New-WMDayRollup -Path $fg -DayId '2026-01-06' -Bands $bands
-    Assert-Equal 5 $rg.gaps.cpu 'as cinco lacunas declaradas foram contadas'
+    Assert-Equal 5 $rg.probeGaps.cpu 'as cinco lacunas declaradas foram contadas'
     Assert-Equal 0 $rg.cpu.highLoadRuns 'dia ocioso com lacuna não inventa janela de carga'
+
+    <#
+        O caso que faltava, e que deixava a correção inteira sem defesa: uma
+        rajada CURTA partida ao meio por uma lacuna. Se a série for compactada,
+        as duas metades se colam e viram carga sustentada que nunca houve.
+        Com dia ocioso (o teste acima) compactar não muda nada — por isso ele
+        sozinho não bastava.
+    #>
+    $fp = New-Day '2026-01-12' -Samples 60 -Bursts 1 -BurstLen 5 -DropProbe cpu -DropFrom 7 -DropCount 1 -Seed 61
+    $rp = New-WMDayRollup -Path $fp -DayId '2026-01-12' -Bands $bands
+    Assert-Equal 1 $rp.probeGaps.cpu 'a lacuna no meio da rajada foi declarada'
+    Assert-Equal 0 $rp.cpu.highLoadRuns 'duas metades de 2 amostras NÃO se colam através da lacuna'
 
     # Dia inteiro sem CPU: contador nunca pôde ser medido, então é nulo.
     $fn = New-Day '2026-01-07' -Samples 30 -Bursts 0 -DropProbe cpu -DropFrom 0 -DropCount 30 -Seed 33
@@ -272,6 +284,121 @@ try {
     # Registrado como medida, não como asserção de vitória: neste regime o p95
     # do dia também enxerga, e a estratificação ganha pouco. Está no README.
     Assert-GreaterThan $alta.Dia   6.0 'e neste regime o p95 do dia TAMBÉM enxerga — o ganho depende do regime'
+
+    # =====================================================================
+    Start-TestGroup 'Contadores positivos: o valor diferente de zero  [MUTAÇÃO]'
+
+    <#
+        Havia asserção para "ausente é nulo" e para "presente e falso é zero",
+        e nenhuma para "presente e verdadeiro é N". Consequência medida: desligar
+        a contagem de contenção térmica e a detecção de reinício era invisível
+        para a suíte inteira.
+    #>
+    $ft = New-Day '2026-01-13' -Samples 40 -Bursts 1 -BurstLen 10 -ThrottleFrom 5 -ThrottleCount 7 -Seed 71
+    $rt = New-WMDayRollup -Path $ft -DayId '2026-01-13' -Bands $bands
+    Assert-Equal 7  $rt.gpu['0'].throttle.thermal         'sete amostras com contenção térmica são contadas'
+    Assert-Equal 40 $rt.gpu['0'].throttle.thermalMeasured 'e as 40 mediram o campo'
+
+    $fr = New-Day '2026-01-14' -Samples 40 -Bursts 0 -RebootAt 20 -Seed 73
+    $rr = New-WMDayRollup -Path $fr -DayId '2026-01-14' -Bands $bands
+    Assert-Equal 1 $rr.reboots 'queda de uptime no meio do dia é um reinício'
+
+    # =====================================================================
+    Start-TestGroup 'Perdas silenciosas deixam rastro  [MUTAÇÃO]'
+
+    # Carga fora de escala não pode sumir sem contador.
+    $fo = New-Day '2026-01-15' -Samples 20 -Bursts 0 -Seed 81
+    Add-Content -LiteralPath $fo -Encoding UTF8 -Value `
+        '{"v":1,"host":"FIXTURE-HOST","at":"2026-01-15T23:58:00.000-03:00","mode":"patrol","upH":100,"cpu":{"util":150,"mhz":4000},"cov":{"ok":[],"gap":{}}}'
+    $ro = New-WMDayRollup -Path $fo -DayId '2026-01-15' -Bands $bands
+    Assert-Equal 1 $ro.cpu.outOfBand 'carga de 150% fica contada como fora de faixa'
+
+    <#
+        Faixa com amostras e nenhuma medida legível não pode desaparecer: isso
+        faria "dez minutos em carga alta sem termômetro" ficar indistinguível
+        de "não houve carga alta".
+    #>
+    $fv = Join-Path $tmp '2026-01-16.jsonl'
+    $linhas = @()
+    for ($i = 0; $i -lt 6; $i++) {
+        $linhas += ('{{"v":1,"host":"FIXTURE-HOST","at":"2026-01-16T0{0}:00:00.000-03:00","mode":"patrol","upH":100,"gpu":[{{"idx":0,"util":90,"tempC":null}}],"cov":{{"ok":[],"gap":{{}}}}}}' -f $i)
+    }
+    [System.IO.File]::WriteAllLines($fv, $linhas, (New-Object System.Text.UTF8Encoding($false)))
+    $rv = New-WMDayRollup -Path $fv -DayId '2026-01-16' -Bands $bands
+    Assert-NotNull $rv.gpu['0'].tempCByLoad['b75']      'a faixa de carga alta continua visível'
+    Assert-Equal 0 $rv.gpu['0'].tempCByLoad['b75'].n    'com zero medidas'
+    Assert-Equal 6 $rv.gpu['0'].tempCByLoad['b75'].gaps 'e seis lacunas declaradas'
+
+    # =====================================================================
+    Start-TestGroup 'Guardas de integridade da janela  [MUTAÇÃO]'
+
+    # Tabela de faixas furada tem que lançar, não agregar torto em silêncio.
+    $erroBanda = $null
+    try { New-WMDayRollup -Path $f1 -DayId 'x' -Bands @(@{id='a';min=0;max=25}, @{id='b';min=50;max=100}) | Out-Null }
+    catch { $erroBanda = $_.Exception.Message }
+    Assert-NotNull $erroBanda 'tabela de faixas com buraco é recusada'
+
+    # Janela com dois hosts é erro de operação, não dado a fundir calado.
+    $h1 = New-Day '2026-01-17' -Samples 20 -Bursts 0 -Seed 91
+    $h2 = Join-Path $tmp '2026-01-18.jsonl'
+    & $fixture -Day '2026-01-18' -Samples 20 -Bursts 0 -Seed 92 -MachineName 'OUTRA-MAQUINA' -OutFile $h2 | Out-Null
+    $rh = New-WMDayRollup -Path @($h1, $h2) -DayId 'mix' -Bands $bands
+    Assert-NotNull $rh.hostsMixed 'janela com dois hosts é sinalizada'
+    Assert-Equal 2 $rh.hostsMixed.Count 'e os dois nomes ficam registrados'
+
+    # Arquivo faltando na janela encolhe a amostra: precisa ficar contado.
+    $rm = New-WMDayRollup -Path @($h1, (Join-Path $tmp 'nao-existe.jsonl')) -DayId 'falta' -Bands $bands
+    Assert-Equal 1  $rm.missingFiles 'o arquivo ausente da janela foi contado'
+    Assert-Equal 20 $rm.samples      'e só as amostras do arquivo presente entraram'
+
+    # =====================================================================
+    Start-TestGroup 'O caso decisivo: sala quente contra refrigeração degradando'
+
+    <#
+        Este é o argumento que o projeto realmente precisa, e que faltava.
+
+        A suíte provava que a estratificação enxerga degradação. Não provava que
+        ela é INSUBSTITUÍVEL — nas fixtures anteriores o simples máximo do dia
+        enxergava igual, em todos os regimes.
+
+        O caso que só a visão estratificada resolve é distinguir DUAS causas
+        que produzem a mesma subida na estatística do dia:
+
+          sala quente              a curva inteira sobe 8 °C
+          refrigeração degradando  só a ponta de carga alta sobe 8 °C
+
+        A primeira é o ar-condicionado; a segunda é o dissipador. A ação é
+        completamente diferente, e qualquer número não-estratificado dá a mesma
+        resposta para as duas.
+    #>
+    $base   = New-Day '2026-03-01' -Samples 1440 -Bursts 6 -BurstLen 20 -Seed 101
+    $sala   = New-Day '2026-03-02' -Samples 1440 -Bursts 6 -BurstLen 20 -ThermalOffsetAll  8 -Seed 101
+    $refrig = New-Day '2026-03-03' -Samples 1440 -Bursts 6 -BurstLen 20 -ThermalOffsetHigh 8 -Seed 101
+
+    $rBase   = New-WMDayRollup -Path $base   -DayId 'b' -Bands $bands
+    $rSala   = New-WMDayRollup -Path $sala   -DayId 's' -Bands $bands
+    $rRefrig = New-WMDayRollup -Path $refrig -DayId 'r' -Bands $bands
+
+    $maxSala   = $rSala.gpu['0'].tempCAllDay.max   - $rBase.gpu['0'].tempCAllDay.max
+    $maxRefrig = $rRefrig.gpu['0'].tempCAllDay.max - $rBase.gpu['0'].tempCAllDay.max
+    $baixaSala   = $rSala.gpu['0'].tempCByLoad['b00'].p50   - $rBase.gpu['0'].tempCByLoad['b00'].p50
+    $baixaRefrig = $rRefrig.gpu['0'].tempCByLoad['b00'].p50 - $rBase.gpu['0'].tempCByLoad['b00'].p50
+    $altaSala   = $rSala.gpu['0'].tempCByLoad['b75'].p95   - $rBase.gpu['0'].tempCByLoad['b75'].p95
+    $altaRefrig = $rRefrig.gpu['0'].tempCByLoad['b75'].p95 - $rBase.gpu['0'].tempCByLoad['b75'].p95
+
+    ""
+    "                              sala quente   refrigeracao"
+    "      maximo do dia          {0,8} C {1,10} C   -- iguais: nao distingue" -f $maxSala, $maxRefrig
+    "      faixa ociosa  (b00)    {0,8} C {1,10} C   -- AQUI esta a diferenca" -f $baixaSala, $baixaRefrig
+    "      faixa de carga (b75)   {0,8} C {1,10} C" -f $altaSala, $altaRefrig
+    ""
+
+    Assert-LessThan    ([math]::Abs($maxSala - $maxRefrig)) 1.5 'o máximo do dia sobe igual nos dois casos: não distingue'
+    Assert-GreaterThan $baixaSala   6.0 'sala quente também esquenta a máquina ociosa'
+    Assert-LessThan    $baixaRefrig 1.0 'refrigeração degradando NÃO muda nada em repouso'
+    Assert-GreaterThan $altaSala    6.0 'sob carga, sala quente sobe'
+    Assert-GreaterThan $altaRefrig  6.0 'sob carga, refrigeração degradando sobe igual'
+    Assert-GreaterThan ($baixaSala - $baixaRefrig) 6.0 'só a visão por faixa separa as duas causas'
 
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue

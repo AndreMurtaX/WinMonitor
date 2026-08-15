@@ -82,14 +82,25 @@ if ($rawFiles.Count -eq 0) {
     return
 }
 
-$window     = @($rawFiles | Select-Object -Last $WindowDays)
-$windowDays = @($window | ForEach-Object { $_.BaseName })
+$window = @($rawFiles | Select-Object -Last $WindowDays)
+
+<#
+    O nome NÃO pode ser $windowDays.
+
+    Nomes de variável em PowerShell são case-insensitive, então $windowDays É o
+    parâmetro [int]$WindowDays, e atribuir um array a ele lança
+    ArgumentTransformationMetadataException e mata o script. Esse defeito
+    existiu aqui e ficou invisível porque, sem nenhum dia completo de ronda, a
+    execução retornava antes desta linha — o script parecia funcionar
+    exatamente porque ainda não havia dado.
+#>
+$windowIds = @($window | ForEach-Object { $_.BaseName })
 
 # ---------------------------------------------------- elegibilidade ---------
 
 $rollups   = @()
 $semRollup = @()
-foreach ($d in $windowDays) {
+foreach ($d in $windowIds) {
     $p = Join-Path $rollDir "$d.json"
     if (-not (Test-Path -LiteralPath $p)) { $semRollup += $d; continue }
     try {
@@ -102,8 +113,9 @@ foreach ($d in $windowDays) {
 }
 
 # Um dia com três amostras não é um dia. Sem este piso, 14 arquivos de uma
-# amostra cada passariam na elegibilidade.
-$diasValidos = @($rollups | Where-Object { $_.samples -ge $MinSamplesPerDay })
+# amostra cada passariam na elegibilidade. Agregado marcado como parcial
+# também não conta: descreve um dia que ainda não terminou.
+$diasValidos = @($rollups | Where-Object { $_.samples -ge $MinSamplesPerDay -and $_.partial -ne $true })
 
 $runs      = 0
 $diasSemRun = 0
@@ -118,7 +130,7 @@ $okDays = $diasValidos.Count -ge $MinDays
 $okRuns = $runs -ge $MinHighLoadRuns
 
 ""
-"Janela candidata: {0} a {1}  ({2} arquivo(s) bruto(s))" -f $windowDays[0], $windowDays[-1], $window.Count
+"Janela candidata: {0} a {1}  ({2} arquivo(s) bruto(s))" -f $windowIds[0], $windowIds[-1], $window.Count
 "Elegibilidade da linha-base — medida DENTRO desta janela"
 "  dias com >= {0,4} amostras : {1,4}  / {2}   {3}" -f $MinSamplesPerDay, $diasValidos.Count, $MinDays, $(if ($okDays) { 'ok' } else { 'ainda não' })
 "  janelas de carga alta      : {0,4}  / {1}   {2}" -f $runs, $MinHighLoadRuns, $(if ($okRuns) { 'ok' } else { 'ainda não' })
@@ -155,7 +167,7 @@ if ([string]::IsNullOrWhiteSpace($Reason)) {
 "Recalculando a partir do bruto: {0} dia(s)..." -f $window.Count
 
 $perfil = New-WMDayRollup -Path @($window | ForEach-Object { $_.FullName }) `
-                          -DayId ('{0}..{1}' -f $windowDays[0], $windowDays[-1]) `
+                          -DayId ('{0}..{1}' -f $windowIds[0], $windowIds[-1]) `
                           -Bands $cfg.loadBands
 
 if ($null -eq $perfil) {
@@ -168,26 +180,48 @@ if ($null -eq $perfil) {
     perfil, não existe contra o que comparar a métrica que mais importa. Uma
     linha-base assim parece funcional e não é.
 #>
-$temFaixaAlta = $false
-if ($perfil.gpu) {
-    foreach ($idx in $perfil.gpu.Keys) {
-        if ($perfil.gpu[$idx].tempCByLoad -and $perfil.gpu[$idx].tempCByLoad['b75']) { $temFaixaAlta = $true }
-    }
+function Test-FaixaAlta {
+    param($Banda)
+    # n -gt 0 importa: uma faixa pode existir com n=0 quando houve amostras e
+    # nenhuma medida legível. Faixa sem medida não serve de referência.
+    ($null -ne $Banda) -and ($null -ne $Banda['b75']) -and ([int]$Banda['b75'].n -gt 0)
 }
-if (-not $temFaixaAlta -and $perfil.cpu -and $perfil.cpu.mhzByLoad -and $perfil.cpu.mhzByLoad['b75']) {
+
+$temFaixaAlta = $false
+$motivoFalta  = ''
+
+if ($perfil.gpu -and $perfil.gpu.Count -gt 0) {
+    <#
+        Havendo GPU, a referência térmica DELA é obrigatória. O b75 da CPU não
+        substitui: uma versão anterior aceitava esse atalho e congelou uma
+        linha-base cuja GPU só tinha a faixa ociosa — a referência que o projeto
+        existe para produzir simplesmente não estava lá, e o arquivo se
+        declarava íntegro.
+    #>
+    $semB75 = @()
+    foreach ($idx in $perfil.gpu.Keys) {
+        if (-not (Test-FaixaAlta $perfil.gpu[$idx].tempCByLoad)) { $semB75 += $idx }
+    }
+    $temFaixaAlta = ($semB75.Count -eq 0)
+    if (-not $temFaixaAlta) {
+        $motivoFalta = "a(s) GPU(s) [$($semB75 -join ', ')] não têm medida de temperatura na faixa de carga alta"
+    }
+} elseif (Test-FaixaAlta $perfil.cpu.mhzByLoad) {
     $temFaixaAlta = $true
+} else {
+    $motivoFalta = 'não há nenhuma amostra medida na faixa de carga alta'
 }
 
 if (-not $temFaixaAlta) {
-    Write-Warning @'
-A janela não contém NENHUMA amostra na faixa de carga alta (75-100%).
+    Write-Warning @"
+Linha-base recusada: $motivoFalta.
 
-Uma linha-base sem essa faixa não serve para o que a linha-base existe: comparar
-temperatura sob carga contra a mesma carga meses depois. Ela pareceria
-funcional e falharia calada na primeira comparação.
+Ela existe para comparar comportamento sob carga contra a mesma carga meses
+depois. Sem a faixa de 75-100% medida, não há contra o que comparar — e uma
+linha-base assim pareceria funcional e falharia calada na primeira comparação.
 
-Recusando congelar. Deixe a máquina trabalhar e a ronda acumular.
-'@
+Deixe a máquina trabalhar e a ronda acumular.
+"@
     return
 }
 
@@ -201,12 +235,12 @@ $baseline = [ordered]@{
     reason    = $Reason
     forced    = [bool]($Force -and -not ($okDays -and $okRuns))
     window    = [ordered]@{
-        from  = $windowDays[0]
-        to    = $windowDays[-1]
+        from  = $windowIds[0]
+        to    = $windowIds[-1]
         days  = $window.Count
         # Os dias exatos ficam gravados: sem isso, ninguém consegue conferir
         # depois se a evidência descrevia mesmo o período congelado.
-        dayList = $windowDays
+        dayList = $windowIds
     }
     evidence  = [ordered]@{
         validDays        = $diasValidos.Count
@@ -233,7 +267,7 @@ if (Test-Path -LiteralPath $target) {
 $json = ConvertTo-Json -InputObject ([pscustomobject]$baseline) -Depth 14
 [System.IO.File]::WriteAllText($target, $json, (New-Object System.Text.UTF8Encoding($false)))
 
-Write-WMLog -Source 'baseline' -Message "linha-base congelada ($($windowDays[0])..$($windowDays[-1])): $Reason"
+Write-WMLog -Source 'baseline' -Message "linha-base congelada ($($windowIds[0])..$($windowIds[-1])): $Reason"
 
 ""
 "Linha-base congelada."
