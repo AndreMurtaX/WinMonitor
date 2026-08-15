@@ -12,6 +12,34 @@
     ]
   },
 
+  "exam": {
+    "_comment": [
+      "Cadencia lenta: uma vez por dia ou sob demanda. Consultar o log de",
+      "eventos custa ordens de grandeza mais que ler um contador CIM, e o dado",
+      "muda em escala de dias - pagar isso a cada minuto seria o monitor virando",
+      "a carga que ele deveria medir.",
+      "",
+      "missing declara as sondas que este exame AINDA NAO TEM, com o motivo.",
+      "Cada uma vira lacuna de cobertura no arquivo do exame, para que uma sonda",
+      "ausente nunca possa ser confundida com uma sonda que rodou e nao achou",
+      "nada."
+    ],
+    "probeTimeoutSec": 30,
+    "probes": [
+      { "name": "Events", "key": "evt" }
+    ],
+    "missing": [
+      {
+        "key": "smart",
+        "reason": "SMART nao coletado: Get-StorageReliabilityCounter exige elevacao (medido: falha com 'acesso a um recurso CIM nao estava disponivel' em sessao comum). Enquanto isso, R-DISK-REALLOCATED-SECTORS fica declarada como nao verificada."
+      },
+      {
+        "key": "cpuTemp",
+        "reason": "Temperatura de CPU nao coletada: exige driver de kernel (LibreHardwareMonitor), que ainda nao foi baixado nem testado contra o antivirus desta maquina. Enquanto isso, throttling de CPU e inferido pela frequencia efetiva."
+      }
+    ]
+  },
+
   "retention": {
     "_comment": "Bruto por 90 dias. Medido: ~900 bytes por amostra, ~1,3 MB/dia, ~117 MB no total. Perícia vale muito mais que isso.",
     "patrolRawDays": 90,

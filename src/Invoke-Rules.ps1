@@ -79,6 +79,28 @@ if ($null -eq $rollup) {
     return
 }
 
+<#
+    --- exame do dia, se houver ---
+
+    O agregado só conhece o que a ronda coleta. O exame traz o que é caro demais
+    para a ronda — hoje, o log de eventos. As regras precisam enxergar os dois,
+    então o bloco do exame é enxertado na raiz da avaliação sob a mesma chave que
+    ele usa no próprio arquivo.
+
+    SÓ O EXAME DO MESMO DIA. Enxertar o exame de ontem num agregado de hoje faria
+    a regra de erro de hardware responder sobre um período que não é o avaliado —
+    e, pior, continuaria respondendo "zero" para sempre depois que o exame
+    parasse de rodar. Sem exame do dia, as regras que dependem dele caem em
+    "sem dado", que é a resposta correta.
+#>
+$exame = Read-JsonFile (Join-Path (Get-WMPath $cfg.paths.exam) "$dia.json")
+if ($exame) {
+    foreach ($k in @($exame.PSObject.Properties.Name)) {
+        if ($k -in 'v', 'host', 'at', 'mode', 'coverage', 'complete') { continue }
+        Add-Member -InputObject $rollup -NotePropertyName $k -NotePropertyValue $exame.$k -Force
+    }
+}
+
 # --- linha-base e hardware --------------------------------------------------
 $baseline = Read-JsonFile (Join-Path (Get-WMPath $cfg.paths.baseline) 'baseline.json')
 $hardware = Read-JsonFile (Get-WMPath 'data\host.json')

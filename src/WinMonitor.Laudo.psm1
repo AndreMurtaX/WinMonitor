@@ -19,10 +19,16 @@
     A CONFERÊNCIA NÃO PRECISA DE MODELO
     -----------------------------------
     A defesa mais forte contra número inventado é aritmética, não julgamento:
-    extrai-se todo número do texto do laudo e confere-se cada um contra o
+    extraem-se os números do texto do laudo e confere-se cada um contra o
     conjunto de valores que o pacote continha. Número órfão é fabricação, e isso
     é regex e teoria dos conjuntos — roda de graça, roda sempre, e não depende de
     um segundo modelo concordar.
+
+    ATÉ ONDE ESSA EXTRAÇÃO VAI. O cabeçalho já afirmou "todo número do texto", e
+    era falso: notação científica, milhar com ponto e número por extenso passavam
+    inteiros. Os três foram fechados. Continuam de fora fração por extenso
+    ("meio grau"), algarismo romano e número escrito em outro idioma. A guarda é
+    forte, não é total — e a diferença fica escrita aqui em vez de ser negada.
 
     Um verificador adversarial por modelo continua valendo para as afirmações
     semânticas, mas ele é a segunda linha. Esta é a primeira.
@@ -126,31 +132,43 @@ function New-WMLaudoPackage {
     fabricação.
 #>
 <#
-    Todo número que aparece em um nó do pacote, inclusive os EMBUTIDOS EM TEXTO.
+    Todas as STRINGS de um nó do pacote.
 
-    Existe por causa de uma reprovação real na primeira execução: o laudo citou
-    "RTX 3080" e a conferência acusou 3080 como número inventado. Ele estava no
-    pacote — dentro de "NVIDIA GeForce RTX 3080" — mas a remoção de literais
-    exige a string INTEIRA, e ninguém escreve o nome completo quando o curto
-    basta. Mesma coisa com 750 de "Intel(R) UHD Graphics 750".
+    ISTO JÁ FOI Get-WMNumbersDeep, E ERA UM BURACO
+    ----------------------------------------------
+    A versão anterior devolvia os NÚMEROS embutidos nos nomes de peça e os
+    despejava no conjunto de permitidos, para que "RTX 3080" deixasse de ser
+    acusado de invenção. Resolvia o falso positivo e abria coisa muito pior,
+    medida no host.json desta máquina:
 
-    Vale só para o bloco de hardware, e a distinção importa: número em NOME DE
-    PEÇA é citável, número em CAMINHO DE MÉTRICA não é. Se isto rodasse sobre as
-    séries, o 75 de b75 e o 95 de p95 virariam medidas permitidas e a guarda
-    passaria a aceitar exatamente o tipo de fabricação que ela existe para pegar
-    — 95 foi um dos números que o modelo inventou naquela mesma execução.
+      o disco chama-se ST10000NM001G-2MW103. Dele saía o 103. Com a tolerância
+      de 5%, o 103 liberava a faixa CONTÍNUA de 98 a 108 — exatamente onde mora
+      uma temperatura de CPU plausível. Um laudo afirmando "a CPU chegou a 100
+      graus" passava nas quatro guardas contra um pacote com zero achados e
+      nenhuma temperatura.
+
+    A ironia mede o tamanho do erro: R-CPU-TEMP-SPEC está desligada porque a
+    procedência do 100 °C era post de comunidade e escrevê-lo na tabela seria
+    inventar fonte. A guarda então aceitava o modelo escrevendo 100 no laudo.
+
+    A CORREÇÃO é não liberar número nenhum por causa de hardware. Em vez disso,
+    remove-se do texto o NOME DA PEÇA como frase — ver Get-WMHardwarePhrases.
+    "RTX 3080" some porque é frase de nome; "100 graus" continua exposto porque
+    não é.
+
+    Nota para quem for mexer aqui: a razão registrada antes — de que percorrer
+    as séries liberaria o 75 de b75 e o 95 de p95 — estava ERRADA. Esta função
+    nunca percorreu NOME de chave, só valor, então caminho de métrica jamais
+    teve por onde entrar. A política de restringir ao hardware continua certa; o
+    perigo real era o outro, e foi o que quase passou.
 #>
-function Get-WMNumbersDeep {
+function Get-WMStringsDeep {
     param($Node, [int]$Depth = 0)
 
     if ($null -eq $Node -or $Depth -gt 6) { return }
 
-    if ($Node -is [string]) {
-        foreach ($m in [regex]::Matches($Node, '\d+(?:\.\d+)?')) { $m.Value }
-        return
-    }
-    if ($Node -is [bool]) { return }
-    if ($Node -is [ValueType]) { $Node; return }
+    if ($Node -is [string]) { $Node; return }
+    if ($Node -is [ValueType]) { return }
 
     <#
         Dicionário ANTES de IEnumerable: IDictionary também é IEnumerable, e
@@ -158,16 +176,61 @@ function Get-WMNumbersDeep {
         arrastando junto os dígitos dos NOMES DE CHAVE. Só os valores entram.
     #>
     if ($Node -is [System.Collections.IDictionary]) {
-        foreach ($k in $Node.Keys) { Get-WMNumbersDeep -Node $Node[$k] -Depth ($Depth + 1) }
+        foreach ($k in $Node.Keys) { Get-WMStringsDeep -Node $Node[$k] -Depth ($Depth + 1) }
         return
     }
     if ($Node -is [System.Collections.IEnumerable]) {
-        foreach ($item in $Node) { Get-WMNumbersDeep -Node $item -Depth ($Depth + 1) }
+        foreach ($item in $Node) { Get-WMStringsDeep -Node $item -Depth ($Depth + 1) }
         return
     }
     foreach ($k in (Get-WMNodeKeys $Node)) {
-        Get-WMNumbersDeep -Node (Get-WMNodeChild $Node $k) -Depth ($Depth + 1)
+        Get-WMStringsDeep -Node (Get-WMNodeChild $Node $k) -Depth ($Depth + 1)
     }
+}
+
+<#
+    As frases de nome de peça que devem sumir do texto antes da extração.
+
+    O critério separa dois tipos de pedaço, e a separação é a defesa inteira:
+
+      TOKEN MISTO (letra e dígito juntos): 'i9-11900K', 'ST10000NM001G-2MW103',
+      'MP600'. Sai sozinho, porque ninguém confunde isso com uma medida. Nenhuma
+      temperatura se escreve 'ST10000NM001G-2MW103'.
+
+      TOKEN SÓ DE DÍGITO: '3080', '750'. Só sai acompanhado — como parte de uma
+      frase de dois ou mais tokens do nome ('RTX 3080', 'Graphics 750'). Sozinho
+      NÃO sai, e é isso que impede que o 103 do nome do disco vire licença para
+      escrever 100, 103 ou 104 como se fossem graus.
+
+    O modelo escrevendo "RTX 3080" continua passando. O modelo escrevendo "103
+    graus" vira órfão e derruba o laudo, que é o comportamento que se quer.
+#>
+function Get-WMHardwarePhrases {
+    param($Hardware)
+
+    $frases = New-Object System.Collections.ArrayList
+    if ($null -eq $Hardware) { return @() }
+
+    foreach ($texto in (Get-WMStringsDeep -Node $Hardware)) {
+        if ([string]::IsNullOrWhiteSpace($texto)) { continue }
+        [void]$frases.Add($texto)
+
+        $tokens = @($texto -split '\s+' | Where-Object { $_ })
+
+        foreach ($t in $tokens) {
+            # Misto letra+dígito: identificador, não medida. Sai sozinho.
+            if ($t -match '\d' -and $t -match '[A-Za-z]') { [void]$frases.Add($t) }
+        }
+
+        # Sequências de 2+ tokens: é o que permite "RTX 3080" sem permitir "3080".
+        for ($i = 0; $i -lt $tokens.Count; $i++) {
+            for ($n = 2; $i + $n -le $tokens.Count; $n++) {
+                [void]$frases.Add(($tokens[$i..($i + $n - 1)] -join ' '))
+            }
+        }
+    }
+
+    @($frases | Where-Object { $_.Length -ge 2 } | Sort-Object -Unique)
 }
 
 function Get-WMAllowedNumbers {
@@ -190,21 +253,21 @@ function Get-WMAllowedNumbers {
     }
 
     <#
-        Hardware: além dos campos numéricos, os números EMBUTIDOS nos nomes de
-        identificação — 3080 em "NVIDIA GeForce RTX 3080", 750 em "Intel UHD
-        Graphics 750", 11900 no nome da CPU.
+        Hardware: SÓ os campos que são medida de verdade — núcleos, threads,
+        clock base, memória total. O nome da peça NÃO entra aqui.
 
-        Sem isto, um laudo que cita corretamente o modelo da placa é acusado de
-        inventar número: a remoção de literais exige a string inteira, e ninguém
-        escreve "NVIDIA GeForce RTX 3080" quando "RTX 3080" basta. Aconteceu na
-        primeira execução real.
-
-        Nome de hardware é citável; caminho de métrica NÃO entra aqui — os
-        números de gpu.0.tempCByLoad.b75.p95 continuam sendo removidos do texto
-        pela lista de literais, e não viram medida permitida.
+        Já entrou, e foi um buraco: os dígitos de ST10000NM001G-2MW103 viravam o
+        número 103, e a tolerância de 5% transformava isso na faixa 98–108,
+        justamente onde mora uma temperatura de CPU plausível. Nome de peça agora
+        é tratado por remoção de frase no texto, não por liberação de número.
     #>
     if ($Package.hardware) {
-        foreach ($n in (Get-WMNumbersDeep -Node $Package.hardware)) { Add-N $n }
+        foreach ($c in 'cpuCores', 'cpuThreads', 'cpuBaseMHz', 'memTotalMB') {
+            Add-N (Get-WMNodeChild $Package.hardware $c)
+        }
+        foreach ($d in @($Package.hardware.disks)) {
+            foreach ($c in 'sizeGB', 'freeGB') { Add-N (Get-WMNodeChild $d $c) }
+        }
     }
 
     # --- contagens derivadas -------------------------------------------------
@@ -250,6 +313,59 @@ function Get-WMAllowedNumbers {
     texto é aceito se algum permitido casar dentro da tolerância relativa OU se
     for o arredondamento de um permitido.
 #>
+<#
+    Números escritos por extenso, em português.
+
+    Existe porque a guarda aritmética só via dígito, e "noventa e cinco graus"
+    não tem nenhum. Um modelo escreve assim sem esforço — e o número inventado
+    passava inteiro por não estar em algarismo.
+
+    Cobre o intervalo que importa para medida de máquina: unidades, dezenas e
+    centenas redondas. Não cobre fração por extenso ("meio grau"), nem número em
+    outro idioma. Isso está dito aqui e nas limitações do README em vez de ser
+    negado no cabeçalho do módulo.
+#>
+function Get-WMSpelledNumbers {
+    param([Parameter(Mandatory)][string]$Text)
+
+    $unid = [ordered]@{
+        'zero'=0;'um'=1;'uma'=1;'dois'=2;'duas'=2;'tres'=3;'três'=3;'quatro'=4;'cinco'=5
+        'seis'=6;'sete'=7;'oito'=8;'nove'=9;'dez'=10;'onze'=11;'doze'=12;'treze'=13
+        'quatorze'=14;'catorze'=14;'quinze'=15;'dezesseis'=16;'dezessete'=17
+        'dezoito'=18;'dezenove'=19
+    }
+    $dez = [ordered]@{
+        'vinte'=20;'trinta'=30;'quarenta'=40;'cinquenta'=50;'sessenta'=60
+        'setenta'=70;'oitenta'=80;'noventa'=90
+    }
+    $cem = [ordered]@{
+        'cem'=100;'cento'=100;'duzentos'=200;'trezentos'=300;'quatrocentos'=400
+        'quinhentos'=500;'seiscentos'=600;'setecentos'=700;'oitocentos'=800;'novecentos'=900
+    }
+
+    $todas = @($cem.Keys) + @($dez.Keys) + @($unid.Keys)
+    $alt   = ($todas | ForEach-Object { [regex]::Escape($_) }) -join '|'
+
+    <#
+        A frase inteira, não a palavra solta: 'noventa e cinco' precisa somar 95,
+        e não produzir 90 e 5 separados — o 5 seria aceito por qualquer coisa
+        perto de 5 e o 95 inventado escaparia.
+    #>
+    $padrao = "(?i)\b(?:$alt)(?:\s+e\s+(?:$alt))*\b"
+
+    foreach ($m in [regex]::Matches($Text, $padrao)) {
+        $partes = @($m.Value.ToLowerInvariant() -split '\s+e\s+' | ForEach-Object { $_.Trim() })
+        $total = 0
+        $valeu = $false
+        foreach ($p in $partes) {
+            if ($cem.Contains($p))       { $total += [int]$cem[$p];  $valeu = $true }
+            elseif ($dez.Contains($p))   { $total += [int]$dez[$p];  $valeu = $true }
+            elseif ($unid.Contains($p))  { $total += [int]$unid[$p]; $valeu = $true }
+        }
+        if ($valeu) { [pscustomobject]@{ value = $total; text = $m.Value } }
+    }
+}
+
 function Test-WMLaudoNumbers {
     param(
         [Parameter(Mandatory)][string]$Text,
@@ -277,30 +393,63 @@ function Test-WMLaudoNumbers {
     }
     [void]$literais.Add([string]$Package.window)
     if ($Package.previous) { [void]$literais.Add([string]$Package.previous.window) }
-    if ($Package.hardware -and $Package.hardware.gpus)  { foreach ($g in @($Package.hardware.gpus))  { [void]$literais.Add([string]$g) } }
-    if ($Package.hardware -and $Package.hardware.disks) { foreach ($d in @($Package.hardware.disks)) { [void]$literais.Add([string]$d.name) } }
-    if ($Package.hardware -and $Package.hardware.cpuName) { [void]$literais.Add([string]$Package.hardware.cpuName) }
+    # Nomes de peça, como FRASE. Ver Get-WMHardwarePhrases: '3080' sozinho não
+    # entra aqui, só acompanhado, e é isso que impede o nome de virar medida.
+    foreach ($f in (Get-WMHardwarePhrases -Hardware $Package.hardware)) { [void]$literais.Add($f) }
 
     # Do mais longo para o mais curto: senão um prefixo come o token maior.
     foreach ($lit in (@($literais | Where-Object { $_ }) | Sort-Object { $_.Length } -Descending)) {
-        $limpo = $limpo.Replace($lit, ' ')
+        $limpo = $limpo -replace [regex]::Escape($lit), ' '
     }
     # Datas e horas em qualquer formato ISO.
     $limpo = [regex]::Replace($limpo, '\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?', ' ')
 
     # --- extrai e confere ---------------------------------------------------
     $orfaos = New-Object System.Collections.ArrayList
-    foreach ($m in [regex]::Matches($limpo, '\d+(?:[.,]\d+)?')) {
+
+    $confere = {
+        param([double]$n, [string]$rotulo)
+        foreach ($p in $permitidos) {
+            if ($p -eq $n) { return }
+            $margem = [math]::Max([math]::Abs($p) * $Tolerance, 0.5)
+            if ([math]::Abs($p - $n) -le $margem) { return }
+        }
+        if (-not $orfaos.Contains($rotulo)) { [void]$orfaos.Add($rotulo) }
+    }
+
+    <#
+        A extração precisa cobrir três formas que escapavam e que um modelo
+        escreve sem esforço nenhum:
+
+          NOTAÇÃO CIENTÍFICA  '3.4e2' virava 3.4 e 2, dois números inofensivos,
+                              e os 340 watts inventados passavam.
+          MILHAR COM PONTO    '2.048 MB' era lido como 2,048 e aceito pela
+                              liberação de 0/1/2.
+          POR EXTENSO         'noventa e cinco graus' não tinha dígito nenhum
+                              para o regex ver.
+
+        O cabeçalho deste módulo afirmava que "extrai-se todo número do texto".
+        Não extraía. Agora extrai estas três também — e continua não sendo
+        "todo": fração por extenso, algarismo romano e número em outro idioma
+        seguem passando. A fronteira está dita em vez de negada.
+    #>
+
+    # Milhar com ponto/vírgula ANTES do resto, senão o separador vira decimal.
+    foreach ($m in [regex]::Matches($limpo, '\b\d{1,3}(?:([.,])\d{3})+\b')) {
+        $bruto = $m.Value -replace '[.,]', ''
+        $n = ConvertTo-WMNumber $bruto
+        if ($null -ne $n) { & $confere ([double]$n) $m.Value }
+    }
+    $limpo = [regex]::Replace($limpo, '\b\d{1,3}(?:[.,]\d{3})+\b', ' ')
+
+    foreach ($m in [regex]::Matches($limpo, '\d+(?:[.,]\d+)?(?:[eE][+-]?\d+)?')) {
         $n = ConvertTo-WMNumber ($m.Value -replace ',', '.')
         if ($null -eq $n) { continue }
+        & $confere ([double]$n) $m.Value
+    }
 
-        $ok = $false
-        foreach ($p in $permitidos) {
-            if ($p -eq $n) { $ok = $true; break }
-            $margem = [math]::Max([math]::Abs($p) * $Tolerance, 0.5)
-            if ([math]::Abs($p - $n) -le $margem) { $ok = $true; break }
-        }
-        if (-not $ok -and -not $orfaos.Contains($m.Value)) { [void]$orfaos.Add($m.Value) }
+    foreach ($e in (Get-WMSpelledNumbers -Text $limpo)) {
+        & $confere ([double]$e.value) $e.text
     }
 
     [pscustomobject]@{
@@ -324,7 +473,13 @@ function Test-WMLaudoRuleIds {
         [Parameter(Mandatory)]$Package
     )
 
-    $conhecidos = New-Object System.Collections.Generic.HashSet[string]
+    <#
+        Comparação SEM caixa. Já passou 'r-memoria-vazando' e 'R-Memoria-Vazando'
+        enquanto 'R-MEMORIA-VAZANDO' era pego — e modelo pequeno escreve em caixa
+        baixa o tempo todo. Uma guarda que só funciona quando o modelo capitaliza
+        direito não é guarda.
+    #>
+    $conhecidos = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($a in @($Package.findings)) { [void]$conhecidos.Add([string]$a.ruleId) }
     if ($Package.coverage) {
         foreach ($b in 'unsourced', 'malformed', 'noData', 'noBaseline', 'notApplicable') {
@@ -336,8 +491,8 @@ function Test-WMLaudoRuleIds {
     }
 
     $inventados = New-Object System.Collections.ArrayList
-    foreach ($m in [regex]::Matches($Text, '\bR-[A-Z0-9-]{2,}\b')) {
-        $id = $m.Value.TrimEnd('-')
+    foreach ($m in [regex]::Matches($Text, '(?i)\bR[-_][A-Z0-9_-]{2,}\b')) {
+        $id = $m.Value.TrimEnd('-', '_')
         if (-not $conhecidos.Contains($id) -and -not $inventados.Contains($id)) { [void]$inventados.Add($id) }
     }
 
@@ -368,7 +523,9 @@ O campo findings do seu laudo tem de conter exatamente os achados que vieram em 
 
 As regras que aparecem em coverage NÃO são achados. Elas são regras que não puderam ser avaliadas, e a única coisa a dizer sobre elas é que ficaram sem verificação, no campo notVerified. Transformar uma delas em achado é afirmar um problema que ninguém mediu. Se você não recebeu o valor, isso não é um achado sem valor: é a ausência de um achado.
 
-Há uma conferência automática que compara o seu findings com o do pacote e rejeita o laudo inteiro se você acrescentar algum.
+Há uma conferência automática que compara o seu findings com o do pacote e rejeita o laudo inteiro nos DOIS sentidos: se você acrescentar um achado que não veio, e se você deixar de relatar um que veio. Apagar é a falha mais grave das duas — achado inventado faz alguém olhar a máquina à toa; achado apagado faz ninguém olhar.
+
+O campo notVerified precisa NOMEAR pelo menos uma das lacunas que o pacote lista em coverage. Escrever "nada" ou "-" preenche o campo sem declarar coisa alguma, e é rejeitado igual a deixá-lo vazio.
 
 NÚMEROS
 Todo número que você escrever precisa vir do pacote. Não calcule médias, não estime, não converta unidades, não arredonde para números "redondos" que não estão lá. Um número que não veio do pacote é invenção, e há uma conferência automática que rejeita o laudo por isso.
@@ -440,6 +597,25 @@ function Get-WMLaudoSchema {
     A contagem também é conferida: com duas placas, a mesma regra pode gerar
     dois achados de verdade. O que não pode é o laudo devolver mais achados de
     uma regra do que o pacote trouxe.
+
+    E O OUTRO LADO, QUE FALTAVA — APAGAR
+    ------------------------------------
+    A guarda conferia só ⊆: acrescentar era barrado, omitir passava. Medido de
+    ponta a ponta com um pacote contendo achado de severidade 'agir' (volume de
+    sistema com 3 GB livres), o laudo abaixo passou nas quatro guardas e foi
+    APRESENTADO:
+
+        Veredito : agir   (calculado pelas regras, não pelo modelo)
+        "A máquina está saudável e não há nada a fazer. Nenhum problema foi
+         encontrado no período."
+
+    O veredito determinístico dizia 'agir' e o texto dizia que estava tudo bem.
+    Das duas falhas possíveis, essa é a pior: inventar problema faz alguém olhar
+    a máquina à toa; apagar problema faz ninguém olhar. E a instrução do sistema
+    já mandava conter EXATAMENTE os achados do pacote — a guarda é que só
+    implementava metade, e quem vale é a guarda.
+
+    Agora a comparação é de igualdade: mesmo conjunto, mesma contagem.
 #>
 function Test-WMLaudoFindings {
     param(
@@ -455,6 +631,7 @@ function Test-WMLaudoFindings {
     }
 
     $inventados = New-Object System.Collections.ArrayList
+    $omitidos   = New-Object System.Collections.ArrayList
     $vistos     = @{}
     foreach ($a in @($Laudo.findings)) {
         $id = [string]$a.ruleId
@@ -469,9 +646,19 @@ function Test-WMLaudoFindings {
         }
     }
 
+    # O lado que faltava: tudo que o pacote trouxe tem de aparecer.
+    foreach ($id in $doPacote.Keys) {
+        $tem = 0
+        if ($vistos.ContainsKey($id)) { $tem = [int]$vistos[$id] }
+        if ($tem -lt [int]$doPacote[$id]) {
+            [void]$omitidos.Add("$id (o pacote trouxe $($doPacote[$id]), o laudo relatou $tem)")
+        }
+    }
+
     [pscustomobject]@{
-        ok       = ($inventados.Count -eq 0)
+        ok       = ($inventados.Count -eq 0 -and $omitidos.Count -eq 0)
         invented = @($inventados)
+        omitted  = @($omitidos)
     }
 }
 
@@ -504,6 +691,22 @@ function Test-WMLaudoFindings {
        correlação entre achados nem causa provável de achado — então não há
        observação legítima a fazer. Pacote sem achados, observations vazio.
 #>
+<#
+    Verdadeiro de verdade.
+
+    Depois de uma volta por JSON, 'complete' pode chegar como a STRING "false" —
+    e em PowerShell toda string não vazia é verdadeira, então "false" era lido
+    como cobertura completa e a obrigação de declarar a lacuna simplesmente
+    desaparecia. O tipo errado desligava a guarda em silêncio.
+#>
+function Test-WMTrue {
+    param($Value)
+    if ($null -eq $Value) { return $false }
+    if ($Value -is [bool]) { return [bool]$Value }
+    if ($Value -is [string]) { return ([string]$Value).Trim() -match '^(?i:true|1|sim)$' }
+    [bool]$Value
+}
+
 function Test-WMLaudoShape {
     param(
         [Parameter(Mandatory)]$Laudo,
@@ -512,9 +715,50 @@ function Test-WMLaudoShape {
 
     $faltas = New-Object System.Collections.ArrayList
 
-    $incompleta = ($Package.coverage -and -not $Package.coverage.complete)
-    if ($incompleta -and [string]::IsNullOrWhiteSpace([string]$Laudo.notVerified)) {
-        [void]$faltas.Add('cobertura incompleta e notVerified vazio: o laudo calou o que não foi verificado')
+    <#
+        Cobertura incompleta: o texto tem de NOMEAR pelo menos uma das lacunas.
+
+        Conferir só que o campo não está em branco era conferir quase nada:
+        '.', '-', 'n/a', 'nada' e até "Tudo foi verificado." satisfaziam a
+        obrigação de declarar a lacuna. O comentário desta função dizia que o
+        lema "lacuna declarada nunca vira tudo certo" só vale se alguém CONFERIR
+        que ela foi declarada — e a conferência era de não-branco.
+
+        Quando a cobertura está incompleta existe pelo menos uma chave de
+        lacuna. Exigir que o texto cite uma delas é a diferença entre preencher
+        o campo e responder à pergunta.
+    #>
+    <#
+        Pacote SEM bloco coverage desligava a guarda inteira: '$Package.coverage
+        -and ...' é falso quando o bloco não existe, e a ausência de declaração
+        de cobertura virava dispensa de declarar cobertura. Ausência de coverage
+        é o caso mais incompleto que existe, não o mais completo.
+    #>
+    if ($null -eq $Package.coverage) {
+        [void]$faltas.Add('o pacote não trouxe bloco coverage: não há como afirmar que algo foi verificado')
+    }
+
+    $incompleta = ($null -eq $Package.coverage) -or (-not (Test-WMTrue $Package.coverage.complete))
+    if ($incompleta -and $Package.coverage) {
+        $lacunas = New-Object System.Collections.ArrayList
+        foreach ($b in 'unsourced', 'malformed', 'noData', 'noBaseline', 'notApplicable') {
+            foreach ($k in (Get-WMNodeKeys (Get-WMNodeChild $Package.coverage $b))) {
+                [void]$lacunas.Add(([string]$k -split '#')[0])
+            }
+        }
+        $texto = [string]$Laudo.notVerified
+
+        if ([string]::IsNullOrWhiteSpace($texto)) {
+            [void]$faltas.Add('cobertura incompleta e notVerified vazio: o laudo calou o que não foi verificado')
+        } elseif ($lacunas.Count -gt 0) {
+            $citou = $false
+            foreach ($l in $lacunas) {
+                if ($texto.IndexOf($l, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $citou = $true; break }
+            }
+            if (-not $citou) {
+                [void]$faltas.Add("notVerified não nomeia nenhuma das lacunas do pacote ($($lacunas.Count) existem): preencher o campo não é declarar a lacuna")
+            }
+        }
     }
 
     if (@($Package.findings).Count -eq 0 -and @($Laudo.observations).Count -gt 0) {
@@ -543,5 +787,6 @@ function Get-WMLaudoText {
 
 Export-ModuleMember -Function `
     New-WMLaudoPackage, Get-WMAllowedNumbers, Test-WMLaudoNumbers, Test-WMLaudoRuleIds,
-    Test-WMLaudoFindings, Test-WMLaudoShape,
+    Test-WMLaudoFindings, Test-WMLaudoShape, Test-WMTrue,
+    Get-WMHardwarePhrases, Get-WMSpelledNumbers,
     Get-WMLaudoSystemPrompt, Get-WMLaudoSchema, Get-WMLaudoText

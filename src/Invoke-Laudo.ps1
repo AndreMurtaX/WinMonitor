@@ -111,15 +111,54 @@ $rejeitados = New-Object System.Collections.ArrayList
 
 for ($tentativa = 1; $tentativa -le $maxTentativas; $tentativa++) {
 
-    $r = & $script -Package $entrada -Config $cfg -Secrets $segredos -SystemPrompt $sistema -Schema $esquema
+    <#
+        O provedor é isolado. Ele faz rede, e sob $ErrorActionPreference='Stop'
+        qualquer coisa que escape de lá matava o driver — sem arquivo de
+        reprovação, sem registro, sem nada. Um parecer que não sai precisa
+        deixar rastro do mesmo jeito.
+    #>
+    $r = $null
+    try {
+        $r = & $script -Package $entrada -Config $cfg -Secrets $segredos -SystemPrompt $sistema -Schema $esquema
+    } catch {
+        $r = @{ ok = $false; reason = "provedor lançou exceção: $($_.Exception.Message)" }
+    }
+    if ($null -eq $r) { $r = @{ ok = $false; reason = 'provedor não devolveu nada' } }
+
+    <#
+        DOIS CAMINHOS QUE PERDIAM A PERÍCIA E PULAVAM A REAPRESENTAÇÃO.
+
+        Os 'continue' daqui saltavam por cima do registro do texto cru E do
+        bloco que anexa o motivo ao pacote. Consequência medida: com o provedor
+        falhando ou devolvendo não-JSON, o arquivo saía com attempts vazio — o
+        registro dizia que houve reprovação e não guardava a FRASE, e sem a
+        frase não há perícia nenhuma. Pior, a segunda tentativa ia sem
+        rejectedBecause: exatamente o "refaça" sozinho que este arquivo diz,
+        algumas linhas abaixo, que não corrige nada.
+
+        Agora todo caminho de falha passa pelo mesmo lugar.
+    #>
+    $porque    = @()
+    $candidato = $null
+
     if (-not $r.ok) {
-        [void]$violacoes.Add("tentativa $tentativa - provedor: $($r.reason)")
-        continue
+        $porque = @("provedor: $($r.reason)")
+    } else {
+        try { $candidato = $r.text | ConvertFrom-Json } catch {
+            $porque = @('a resposta não é JSON válido')
+        }
     }
 
-    $candidato = $null
-    try { $candidato = $r.text | ConvertFrom-Json } catch {
-        [void]$violacoes.Add("tentativa $tentativa - resposta não é JSON válido")
+    if ($porque.Count -gt 0) {
+        [void]$violacoes.Add("tentativa $tentativa - " + ($porque -join ' | '))
+        [void]$rejeitados.Add([ordered]@{
+            attempt = $tentativa
+            why     = @($porque)
+            orphans = @()
+            text    = $r.text
+        })
+        $entrada = $pacote | ConvertTo-Json -Depth 14 | ConvertFrom-Json
+        Add-Member -InputObject $entrada -NotePropertyName rejectedBecause -NotePropertyValue @($porque) -Force
         continue
     }
 
@@ -141,7 +180,10 @@ for ($tentativa = 1; $tentativa -le $maxTentativas; $tentativa++) {
     $porque = @()
     if (-not $num.ok) { $porque += ("números que não vieram do pacote: " + ($num.orphans -join ', ')) }
     if (-not $reg.ok) { $porque += ("regras citadas que não existem: " + ($reg.invented -join ', ')) }
-    if (-not $ach.ok) { $porque += ("achados relatados que o pacote NÃO trouxe: " + ($ach.invented -join ', ')) }
+    if (-not $ach.ok) {
+        if (@($ach.invented).Count -gt 0) { $porque += ("achados relatados que o pacote NÃO trouxe: " + ($ach.invented -join ', ')) }
+        if (@($ach.omitted).Count  -gt 0) { $porque += ("achados do pacote que o laudo APAGOU: "      + ($ach.omitted  -join ', ')) }
+    }
     if (-not $frm.ok) { $porque += ("obrigações do laudo não cumpridas: " + ($frm.missing -join ' ; ')) }
     [void]$violacoes.Add("tentativa $tentativa - " + ($porque -join ' | '))
     [void]$rejeitados.Add([ordered]@{
