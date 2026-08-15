@@ -25,7 +25,51 @@
     "baseline": "data\\baseline",
     "findings": "data\\findings",
     "laudo": "data\\laudo",
+    "report": "data\\report",
+    "notify": "data\\notify",
     "logs": "logs"
+  },
+
+  "notify": {
+    "_comment": [
+      "channels: por onde o relatorio sai. 'File' sempre funciona e nao precisa",
+      "de nada configurado - mas arquivo numa maquina que voce nao esta olhando",
+      "nao notifica ninguem. 'Webhook' e o canal remoto: cobre ntfy, Discord,",
+      "Slack, Teams e endpoint proprio, e precisa de webhook.url em secrets.json.",
+      "",
+      "heartbeatDays: passados tantos dias SEM nenhuma notificacao, o relatorio",
+      "sai assim mesmo dizendo que nada mereceu atencao. Existe porque monitor",
+      "calado e indistinguivel de monitor morto: tres semanas de silencio nao",
+      "dizem se a maquina esta bem ou se o agente parou em julho.",
+      "",
+      "repeatDays: de quantos em quantos dias um achado que PERSISTE volta a",
+      "avisar. Problema que continua nao deixa de ser problema por ja ter sido",
+      "anunciado uma vez.",
+      "",
+      "blindDays: quantos dias seguidos de cobertura incompleta viram aviso,",
+      "mesmo sem nenhum achado. O veredito continua saindo 'normal', que e",
+      "verdade sobre o que foi medido e silencio sobre o que nao foi.",
+      "",
+      "staleAfterMinutes: com quanto atraso da ultima amostra a coleta e",
+      "considerada parada. Abaixo desse limite o dado e de agora; acima, o",
+      "veredito e sobre o passado e o relatorio diz isso na primeira linha."
+    ],
+    "channels": ["File"],
+    "heartbeatDays": 7,
+    "repeatDays": 1,
+    "blindDays": 3,
+    "patrolIntervalMinutes": 1,
+    "staleAfterMinutes": 30,
+    "webhook": {
+      "_comment": [
+        "bodyTemplate diz onde o texto entra. Vazio manda texto puro (ntfy).",
+        "Discord: {\"content\": \"{{text}}\"}   Slack: {\"text\": \"{{text}}\"}",
+        "titleHeader: cabecalho de assunto, se o destino usar um (ntfy: X-Title)."
+      ],
+      "bodyTemplate": "",
+      "titleHeader": "X-Title",
+      "timeoutSec": 30
+    }
   },
 
   "laudo": {
