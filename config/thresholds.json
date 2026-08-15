@@ -1,0 +1,197 @@
+{
+  "version": 1,
+
+  "_leiaIsto": [
+    "Este arquivo e a razao de existir da separacao entre a camada deterministica",
+    "e a camada de parecer. Quem decide o que e um problema e ESTE arquivo, com a",
+    "fonte declarada. O modelo de linguagem le o resultado; nunca escolhe o numero.",
+    "",
+    "TODA regra precisa de source.kind. Regra sem fonte NAO e avaliada: o motor a",
+    "reporta como nao-verificada, jamais como aprovada. Metrica ausente e metrica",
+    "boa nao podem se parecer, e limiar inventado e pior que limiar ausente.",
+    "",
+    "source.kind:",
+    "  spec    fato de hardware, com url do fabricante e data de verificacao.",
+    "  policy  escolha de operacao (sensibilidade, folga). Nao e fato: e decisao,",
+    "          e o texto precisa dizer POR QUE aquele valor e nao outro.",
+    "  pending sem fonte. A regra existe, fica desligada, e aparece no relatorio",
+    "          como nao-verificada ate alguem citar a origem."
+  ],
+
+  "severityScale": ["normal", "observar", "agir", "parar"],
+
+  "rules": [
+
+    {
+      "id": "R-GPU-THERMAL-THROTTLE",
+      "kind": "absolute",
+      "subsystem": "gpu",
+      "severity": "agir",
+      "claim": "A placa reduziu os clocks por calor",
+      "metric": "gpu.*.throttle.thermal",
+      "operator": "gt",
+      "value": 0,
+      "source": {
+        "kind": "spec",
+        "text": "Nao ha limiar a escolher aqui: a propria placa declara a contencao termica em clocks_throttle_reasons (bits SwThermalSlowdown 0x20 e HwThermalSlowdown 0x40). E evidencia direta, nao inferencia a partir de temperatura.",
+        "url": "https://developer.nvidia.com/nvidia-system-management-interface",
+        "verifiedAt": "2026-08-15"
+      }
+    },
+
+    {
+      "id": "R-GPU-TEMP-SPEC-3080",
+      "kind": "absolute",
+      "subsystem": "gpu",
+      "severity": "agir",
+      "claim": "A GPU atingiu a temperatura maxima de projeto",
+      "metric": "gpu.*.tempCAllDay.max",
+      "operator": "gte",
+      "value": 93,
+      "appliesTo": "GeForce RTX 3080",
+      "source": {
+        "kind": "spec",
+        "text": "NVIDIA lista 'Maximum GPU Temperature (in C): 93' na secao Thermal and Power Specs da pagina oficial da RTX 3080. E o limite de projeto, nao um valor confortavel: chegar nele significa que a placa esta se defendendo.",
+        "url": "https://www.nvidia.com/en-us/geforce/graphics-cards/30-series/rtx-3080-3080ti/",
+        "verifiedAt": "2026-08-15"
+      }
+    },
+
+    {
+      "id": "R-CPU-TEMP-SPEC",
+      "kind": "absolute",
+      "subsystem": "cpu",
+      "severity": "agir",
+      "claim": "A CPU atingiu a temperatura maxima de juncao",
+      "metric": "cpu.tempC.max",
+      "operator": "gte",
+      "value": null,
+      "source": {
+        "kind": "pending",
+        "text": "TJUNCTION do i9-11900K. A pagina de especificacao da Intel (ark.intel.com) recusa acesso automatizado, e busca secundaria devolveu 100 C atribuido a posts de comunidade, nao a documento oficial. Escrever esse numero aqui seria inventar procedencia. A regra fica desligada ate alguem confirmar na fonte primaria e preencher url e verifiedAt.",
+        "url": "",
+        "verifiedAt": ""
+      }
+    },
+
+    {
+      "id": "R-GPU-TEMP-DRIFT",
+      "kind": "relative",
+      "subsystem": "gpu",
+      "severity": "observar",
+      "claim": "A GPU esta mais quente que a linha-base sob a mesma carga",
+      "metric": "gpu.*.tempCByLoad.b75.p95",
+      "operator": "gt",
+      "delta": 6,
+      "source": {
+        "kind": "policy",
+        "text": "Seis graus na mesma faixa de carga. Nao e fato de hardware: e a sensibilidade escolhida. O piso vem do ruido medido entre dias de carga equivalente na propria fixture do projeto (desvio-padrao do maximo diario ~0,5 C), entao 6 C esta uma ordem de grandeza acima do ruido e nao dispara por variacao normal. Baixar este numero aumenta alarme falso; subir atrasa a deteccao de poeira e pasta ressecada.",
+        "url": "",
+        "verifiedAt": "2026-08-15"
+      }
+    },
+
+    {
+      "id": "R-CPU-CLOCK-DRIFT",
+      "kind": "relative",
+      "subsystem": "cpu",
+      "severity": "observar",
+      "claim": "A CPU sustenta menos clock que a linha-base sob a mesma carga",
+      "metric": "cpu.mhzByLoad.b75.p50",
+      "operator": "lt",
+      "deltaPct": -8,
+      "source": {
+        "kind": "policy",
+        "text": "Oito por cento abaixo da linha-base na mesma faixa de carga. Enquanto a temperatura de CPU nao for coletada (depende de driver de kernel, fase F3), a frequencia efetiva sustentada e o unico indicador de throttling termico disponivel: processador quente se defende baixando clock. Percentual e nao valor absoluto porque o clock base varia por maquina.",
+        "url": "",
+        "verifiedAt": "2026-08-15"
+      }
+    },
+
+    {
+      "id": "R-MEM-POOL-LEAK",
+      "kind": "relative",
+      "subsystem": "mem",
+      "severity": "observar",
+      "claim": "O pool nao-paginado do kernel cresceu muito acima da linha-base",
+      "metric": "mem.poolNonpagedMB.p50",
+      "operator": "gt",
+      "deltaPct": 50,
+      "source": {
+        "kind": "policy",
+        "text": "Cinquenta por cento acima da linha-base. Crescimento monotonico de pool nao-paginado ao longo de semanas e a assinatura classica de vazamento de driver, invisivel num retrato instantaneo. O valor e frouxo de proposito: variacao normal por carga de trabalho e grande, e o sinal que interessa e a tendencia sustentada, nao o pico.",
+        "url": "",
+        "verifiedAt": "2026-08-15"
+      }
+    },
+
+    {
+      "id": "R-DISK-SPACE-LOW",
+      "kind": "absolute",
+      "subsystem": "sto",
+      "severity": "agir",
+      "claim": "O volume ficou com pouco espaco livre",
+      "metric": "sto.volFreeGB.*.min",
+      "operator": "lt",
+      "value": 20,
+      "source": {
+        "kind": "policy",
+        "text": "Vinte gigabytes livres. Escolha de operacao, nao especificacao: e a folga abaixo da qual atualizacao do Windows, arquivo de paginacao e despejo de memoria comecam a competir. Usa o MINIMO do dia, nao a media, porque o que importa e a mare baixa.",
+        "url": "",
+        "verifiedAt": "2026-08-15"
+      }
+    },
+
+    {
+      "id": "R-REBOOT-UNEXPECTED",
+      "kind": "absolute",
+      "subsystem": "os",
+      "severity": "observar",
+      "claim": "A maquina reiniciou no periodo",
+      "metric": "reboots",
+      "operator": "gt",
+      "value": 0,
+      "source": {
+        "kind": "policy",
+        "text": "Qualquer reinicio e reportado. Num servidor que deveria ficar de pe, reinicio e evento a explicar, mesmo quando planejado. A severidade e baixa justamente porque a maioria tem explicacao; o valor esta em o parecer poder correlacionar o reinicio com o que veio antes dele.",
+        "url": "",
+        "verifiedAt": "2026-08-15"
+      }
+    },
+
+    {
+      "id": "R-WHEA-HARDWARE-ERROR",
+      "kind": "absolute",
+      "subsystem": "os",
+      "severity": "parar",
+      "claim": "O Windows registrou erro de hardware (WHEA)",
+      "metric": "events.whea.count",
+      "operator": "gt",
+      "value": 0,
+      "source": {
+        "kind": "pending",
+        "text": "A regra esta correta e a fonte e o proprio log do Windows (WHEA-Logger). Fica desligada porque a sonda que le eventos so existe na fase F3: o dado de entrada ainda nao e coletado. Ligar antes disso faria a regra passar sempre, afirmando ausencia de erro de hardware sobre dado que ninguem leu.",
+        "url": "",
+        "verifiedAt": ""
+      }
+    },
+
+    {
+      "id": "R-DISK-REALLOCATED-SECTORS",
+      "kind": "relative",
+      "subsystem": "sto",
+      "severity": "agir",
+      "claim": "A contagem de setores realocados do disco aumentou",
+      "metric": "smart.*.reallocatedSectors",
+      "operator": "gt",
+      "delta": 0,
+      "source": {
+        "kind": "pending",
+        "text": "Setor realocado que aparece depois da linha-base e o sinal mais confiavel de disco mecanico morrendo, e o alvo desta maquina inclui um HDD de 10 TB. Desligada pelo mesmo motivo da WHEA: a leitura SMART e da fase F3 e exige privilegio administrativo.",
+        "url": "",
+        "verifiedAt": ""
+      }
+    }
+
+  ]
+}
