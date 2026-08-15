@@ -88,6 +88,71 @@ Remover:
 .\tools\Register-PatrolTask.ps1 -Unregister
 ```
 
+Agregar os dias já completos (roda uma vez por dia; ignora o dia corrente, que
+ainda está sendo escrito):
+
+```powershell
+.\src\Invoke-Rollup.ps1
+```
+
+Ver se já há dado suficiente para congelar a linha-base, e congelá-la:
+
+```powershell
+.\src\New-Baseline.ps1 -CheckOnly
+.\src\New-Baseline.ps1 -Reason "primeira linha-base"
+```
+
+Rodar os testes:
+
+```powershell
+.\tests\Test-Rollup.ps1
+```
+
+---
+
+## Por que percentil por faixa de carga, e não média
+
+Esta é a decisão que faz o projeto valer alguma coisa, então vale explicar.
+
+Uma máquina passa a maior parte do tempo ociosa. A média diária de qualquer
+métrica térmica é, portanto, dominada pelo ócio — e degradação real desaparece
+nela. O agregado deste projeto classifica cada amostra numa faixa de carga
+(0–25, 25–50, 50–75, 75–100%) e calcula os percentis **dentro** de cada faixa,
+sempre usando a carga do próprio subsistema: temperatura de GPU é estratificada
+pela carga da GPU, nunca pela da CPU, porque a placa pode estar a 100% com o
+processador dormindo.
+
+O teste `tests\Test-Rollup.ps1` mede isso com pares de dias sintéticos
+idênticos, exceto por +8 °C aplicados somente às amostras de carga alta — o
+efeito de pasta térmica secando ou poeira acumulando. Comparando p95 contra p95:
+
+```
+carga alta em  2,1% do dia :  p95 do dia  0,0 °C   p95 da faixa  8,0 °C
+carga alta em 13,9% do dia :  p95 do dia  8,0 °C   p95 da faixa  8,0 °C
+```
+
+**O ganho depende do regime, e o teste mede os dois.** Num servidor que passa a
+quase totalidade do tempo ocioso — a linha de cima, e o caso normal — a
+estatística do dia inteiro é completamente cega e só a faixa enxerga. Quando a
+carga alta ocupa uma fatia grande do dia, ela entra na cauda do p95 diário e a
+estatística simples também enxerga; aí a estratificação ganha pouco.
+
+Isto está escrito assim porque a versão anterior deste README afirmava que a
+estatística do dia "não se move um décimo", apoiada num teste que comparava a
+*mediana* do dia contra o *p95* da faixa — duas estatísticas diferentes. Na
+mesma fixture, o p95 do dia movia os mesmos 8 °C. A tese é verdadeira no regime
+que importa; a demonstração é que estava errada.
+
+A linha-base se recusa a existir sobre dado insuficiente: exige 14 dias de ronda
+**e** 20 janelas de carga alta sustentada, ambos medidos dentro da mesma janela
+que será congelada, e recusa também se o perfil resultante não contiver a faixa
+de carga alta — sem ela não há contra o que comparar. Antes disso a resposta é
+"ainda não sei".
+
+E a linha-base se recusa a existir sobre dado insuficiente: exige 14 dias de
+ronda **e** 20 janelas de carga alta sustentada. Antes disso a resposta é
+"ainda não sei", que é honesta — e melhor que um diagnóstico apoiado em ruído.
+
 ---
 
 ## Onde ficam os dados

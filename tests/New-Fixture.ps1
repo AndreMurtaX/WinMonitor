@@ -1,0 +1,184 @@
+﻿#requires -Version 5.1
+<#
+    Gerador de dia sintético de ronda.
+
+    Sintético por dois motivos. Primeiro, fixture com dado real carregaria nome
+    de host e modelos de disco para dentro de um repositório público. Segundo, e
+    mais importante: dado sintético tem propriedades CONHECIDAS, então o teste
+    afirma valores exatos em vez de conferir que "parece razoável".
+
+    O modelo térmico é deliberadamente simples e explícito:
+
+        temperatura = base + carga * ganho + ruído + (desvio, só na faixa alta)
+
+    -ThermalOffsetHigh soma graus APENAS nas amostras de carga alta. É assim que
+    se simula degradação — pasta secando, poeira acumulando — que é o defeito
+    invisível para a estatística do dia e visível na comparação por faixa.
+
+    OS INTERRUPTORES ADVERSARIAIS
+
+    Uma versão anterior desta fixture era estruturalmente incapaz de detectar
+    três defeitos reais, e por isso a suíte passava verde sobre código quebrado.
+    Cada interruptor abaixo existe para tornar um deles detectável:
+
+      -GpuAntiCorrelated  carga de GPU oposta à de CPU. Sem isso, estratificar
+                          a temperatura da GPU pela carga da CPU dá o mesmo
+                          resultado e o erro é invisível.
+      -EdgeBurstEnd       rajada colada no fim do dia. Sem isso, nenhuma janela
+                          de carga toca a virada e a fusão indevida entre dias
+                          consecutivos nunca aparece.
+      -DropProbe          amostras com um subsistema ausente e lacuna declarada,
+                          que é o formato que Invoke-Patrol produz de verdade.
+      -NoThrottleFields   modo degradado da sonda de GPU (FIELDS_MIN), em que a
+                          máscara de contenção não existe.
+#>
+[CmdletBinding()]
+param(
+    [string]$Day = '2026-01-01',
+    [int]$Samples = 1440,
+    [int]$Bursts = 10,
+    [int]$BurstLen = 20,
+    [double]$ThermalOffsetHigh = 0,
+    [switch]$GpuAntiCorrelated,
+    [switch]$EdgeBurstStart,
+    [switch]$EdgeBurstEnd,
+    [ValidateSet('', 'cpu', 'mem', 'sto', 'gpu')][string]$DropProbe = '',
+    [int]$DropFrom = -1,
+    [int]$DropCount = 0,
+    [switch]$NoThrottleFields,
+    [int]$Seed = 20260101,
+    [string]$OutFile
+)
+
+Get-Random -SetSeed $Seed | Out-Null
+
+# ------------------------------------------------------- perfil de carga ----
+
+$cload = New-Object 'double[]' $Samples
+for ($i = 0; $i -lt $Samples; $i++) { $cload[$i] = Get-Random -Minimum 3 -Maximum 16 }
+
+function Set-Burst {
+    param([int]$Start, [int]$Len)
+    for ($k = 0; $k -lt $Len; $k++) {
+        $j = $Start + $k
+        if ($j -ge 0 -and $j -lt $Samples) { $cload[$j] = Get-Random -Minimum 80 -Maximum 97 }
+    }
+}
+
+# Rajadas internas, sempre com folga ociosa nas pontas.
+$spacing = [int][math]::Floor($Samples / [math]::Max($Bursts, 1))
+for ($b = 0; $b -lt $Bursts; $b++) { Set-Burst -Start ($b * $spacing + 5) -Len $BurstLen }
+
+# Rajadas de borda: coladas na primeira e na última amostra do dia.
+if ($EdgeBurstStart) { Set-Burst -Start 0 -Len $BurstLen }
+if ($EdgeBurstEnd)   { Set-Burst -Start ($Samples - $BurstLen) -Len $BurstLen }
+
+# Carga de GPU: por padrão acompanha a da CPU; anti-correlacionada quando
+# pedido, para que estratificar pela carga errada produza resultado errado.
+$gload = New-Object 'double[]' $Samples
+for ($i = 0; $i -lt $Samples; $i++) {
+    if ($GpuAntiCorrelated) { $gload[$i] = [math]::Max(2, 99 - $cload[$i]) }
+    else                    { $gload[$i] = $cload[$i] }
+}
+
+# ------------------------------------------------------------- geração ------
+
+$lines = New-Object System.Collections.ArrayList
+$t0    = [datetime]::ParseExact($Day, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+
+$dropTo = -1
+if ($DropProbe -and $DropCount -gt 0 -and $DropFrom -ge 0) { $dropTo = $DropFrom + $DropCount - 1 }
+
+for ($i = 0; $i -lt $Samples; $i++) {
+    $cl = $cload[$i]
+    $gl = $gload[$i]
+
+    $dropping = ($i -ge $DropFrom -and $i -le $dropTo -and $DropProbe -ne '')
+
+    $gpuTemp = 35.0 + $gl * 0.45 + (Get-Random -Minimum -10 -Maximum 11) / 10.0
+    if ($gl -ge 75) { $gpuTemp += $ThermalOffsetHigh }
+
+    $cpuMhz = 3504 * (0.55 + $cl / 100.0 * 0.90)
+
+    $sample = [ordered]@{
+        v    = 1
+        host = 'FIXTURE-HOST'
+        at   = $t0.AddMinutes($i).ToString('yyyy-MM-ddTHH:mm:ss.fffzzz')
+        mode = 'patrol'
+        upH  = [math]::Round(100 + $i / 60.0, 2)
+    }
+
+    $ok  = New-Object System.Collections.ArrayList
+    $gap = [ordered]@{}
+
+    if ($dropping -and $DropProbe -eq 'cpu') {
+        $gap['cpu'] = 'sonda indisponivel (fixture)'
+    } else {
+        [void]$ok.Add('cpu')
+        $sample.cpu = [ordered]@{
+            util = [int]$cl; perfPct = [int](($cpuMhz / 3504) * 100); mhz = [int]$cpuMhz
+            queue = 0; procs = 300 + ($i % 7); threads = 5000 + ($i % 31)
+        }
+    }
+
+    if ($dropping -and $DropProbe -eq 'mem') {
+        $gap['mem'] = 'sonda indisponivel (fixture)'
+    } else {
+        [void]$ok.Add('mem')
+        $sample.mem = [ordered]@{
+            availMB = 90000 - ($i % 500); committedMB = 60000 + ($i % 900)
+            commitLimitMB = 139071; pagesSec = 0
+            poolNonpagedMB = 2600 + [int]($i / 200)      # crescimento lento, de propósito
+            poolPagedMB = 4000 + ($i % 40)
+            commitPct = [math]::Round(43.0 + ($i % 600) / 100.0, 1)
+            usedPct = [math]::Round(30.0 + ($i % 500) / 100.0, 1)
+        }
+    }
+
+    if ($dropping -and $DropProbe -eq 'sto') {
+        $gap['sto'] = 'sonda indisponivel (fixture)'
+    } else {
+        [void]$ok.Add('sto')
+        $sample.sto = [ordered]@{
+            vol  = @([ordered]@{ id = 'C:'; freeGB = [math]::Round(400.0 - $i * 0.01, 2); sizeGB = 1862.1; freePct = 21.5 })
+            disk = @([ordered]@{ id = '0 C:'; busyPct = [int]([math]::Min(100, $cl / 2)); queue = 0 })
+        }
+    }
+
+    if ($dropping -and $DropProbe -eq 'gpu') {
+        $gap['gpu'] = 'nvidia-smi indisponivel (fixture)'
+    } else {
+        [void]$ok.Add('gpu')
+        $g = [ordered]@{
+            idx     = 0
+            tempC   = [math]::Round($gpuTemp, 1)
+            util    = [int]$gl
+            memMB   = 1800 + ($i % 300)
+            memTotMB= 10240
+            watts   = [math]::Round(30.0 + $gl * 2.9, 2)
+            coreMHz = [int](210 + $gl * 17)
+            fanPct  = [int]([math]::Max(0, ($gpuTemp - 50) * 2))
+        }
+        # Modo degradado: sem a máscara, os campos de contenção não existem.
+        if (-not $NoThrottleFields) {
+            $g.thrMask    = '0x1'
+            $g.thr        = @('GpuIdle')
+            $g.thrThermal = ($gpuTemp -gt 83)
+            $g.thrHard    = $false
+        }
+        $sample.gpu = @($g)
+    }
+
+    $sample.cov = [ordered]@{ ok = @($ok); gap = $gap }
+
+    [void]$lines.Add((ConvertTo-Json -InputObject $sample -Depth 10 -Compress))
+}
+
+if ($OutFile) {
+    $dir = Split-Path -Parent $OutFile
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    [System.IO.File]::WriteAllLines($OutFile, $lines, (New-Object System.Text.UTF8Encoding($false)))
+    "fixture: {0}  ({1} amostras)" -f $OutFile, $lines.Count
+} else {
+    $lines
+}
