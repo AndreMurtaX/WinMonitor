@@ -51,7 +51,20 @@ param(
 )
 
 if ($null -eq $Facts) { $Facts = Get-WMHostFacts }
-if (-not $PSBoundParameters.ContainsKey('Since')) { $Since = (Get-Date).AddDays(-$WindowDays) }
+
+<#
+    Se -Since vier de fora, a janela DECLARADA passa a ser a janela real.
+    Antes, gravava-se windowDays tal como recebido enquanto a consulta usava
+    outro período: 365 dias declarados sobre uma janela de dois dias, e a
+    contagem lida como se fosse anual. Contagem sem período é número sem
+    significado — um desligamento inesperado em 30 dias e em 3 anos são
+    diagnósticos diferentes.
+#>
+if ($PSBoundParameters.ContainsKey('Since')) {
+    $WindowDays = [int][Math]::Ceiling(((Get-Date) - $Since).TotalDays)
+} else {
+    $Since = (Get-Date).AddDays(-$WindowDays)
+}
 
 <#
     O log está acessível E legível?
@@ -129,7 +142,14 @@ function Measure-Event {
 
     try {
         $ev = @(Get-WinEvent -FilterHashtable $Filter -MaxEvents $Max -ErrorAction Stop)
-        return @{ ok = $true; count = $ev.Count; events = $ev }
+        <#
+            SATURAÇÃO É DECLARADA. Com o teto atingido, $ev.Count vale exatamente
+            $Max — e gravar isso como contagem afirma "foram 200" quando o certo
+            é "foram pelo menos 200". Numa máquina reiniciando várias vezes por
+            dia, ou com WHEA torrencial, é justamente o caso em que o número
+            importa, e era o caso em que ele mentia.
+        #>
+        return @{ ok = $true; count = $ev.Count; events = $ev; truncated = ($ev.Count -ge $Max) }
     } catch {
         if ([string]$_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') {
             return @{ ok = $true; count = 0; events = @() }
@@ -169,6 +189,10 @@ try {
     $whea = Measure-Event @{ LogName = $LogName; ProviderName = 'Microsoft-Windows-WHEA-Logger'; Level = 1, 2; StartTime = $Since }
     if ($whea.ok) {
         $data.wheaErrors = [int]$whea.count
+        if ($whea.truncated) {
+            $data.wheaTruncated = $true
+            [void]$avisos.Add("a contagem WHEA atingiu o teto da consulta: foram PELO MENOS $($whea.count), nao exatamente $($whea.count)")
+        }
         if ($whea.count -gt 0) {
             $data.lastWheaAt = $whea.events[0].TimeCreated.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
         }
@@ -187,6 +211,10 @@ try {
     $ines = Measure-Event @{ LogName = $LogName; Id = 6008; StartTime = $Since }
     if ($ines.ok) {
         $data.unexpectedShutdowns = [int]$ines.count
+        if ($ines.truncated) {
+            $data.unexpectedTruncated = $true
+            [void]$avisos.Add("a contagem de desligamento inesperado atingiu o teto: foram PELO MENOS $($ines.count)")
+        }
         if ($ines.count -gt 0) {
             $data.lastUnexpectedAt = $ines.events[0].TimeCreated.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
         }

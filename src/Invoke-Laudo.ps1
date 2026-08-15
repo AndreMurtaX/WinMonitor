@@ -287,11 +287,18 @@ if (@($achados.findings).Count -gt 0) {
     ""
 }
 
+<#
+    A contagem passa por Get-WMRealCount pelo mesmo motivo da guarda:
+    @($null).Count é UM, e com notVerified nulo isto imprimia uma lacuna em
+    branco — "  - :" — sob o título "Não verificado". Uma linha vazia ali lê-se
+    como se houvesse algo não verificado que ninguém soube nomear.
+#>
 "Não verificado:"
-if (@($laudo.notVerified).Count -eq 0) {
+if ((Get-WMRealCount $laudo.notVerified) -eq 0) {
     "  (nada declarado)"
 } else {
     foreach ($n in @($laudo.notVerified)) {
+        if ($null -eq $n) { continue }
         if ($n -is [string]) { "  - $n" } else { "  - {0}: {1}" -f $n.ruleId, $n.note }
     }
 }

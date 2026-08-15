@@ -53,6 +53,15 @@ try {
     $longo = & $sonda -WindowDays 365
     Assert-True ($curto.data.cleanShutdowns -le $longo.data.cleanShutdowns) 'janela menor nunca conta mais que a maior'
 
+    <#
+        A JANELA DECLARADA TEM DE SER A JANELA CONSULTADA. Antes, -Since e
+        -WindowDays podiam discordar e o arquivo gravava o segundo enquanto a
+        consulta usava o primeiro: 365 dias declarados sobre dois dias de dado.
+    #>
+    $comSince = & $sonda -WindowDays 365 -Since ((Get-Date).AddDays(-2))
+    Assert-True ($comSince.data.windowDays -le 3) 'com -Since, windowDays reflete a janela REAL, não o parâmetro ignorado'
+    Assert-True ($comSince.data.cleanShutdowns -le $longo.data.cleanShutdowns) 'e a contagem é a dos dois dias'
+
     # =====================================================================
     Start-TestGroup 'Sonda de eventos: o log ILEGÍVEL  [o teste que importa]'
 
@@ -169,29 +178,44 @@ try {
 
         Agora o teste planta uma sonda que falha DE VERDADE e confere o que sai.
     #>
-    $sondaRuim = Join-Path $root 'src\probes\Probe-TesteQueFalha.ps1'
-    $cfgP      = Join-Path $root 'config\config.json'
-    $cfgOrig   = [System.IO.File]::ReadAllText($cfgP)
+    <#
+        CÓPIA DO PROJETO, não o projeto.
+
+        A versão anterior reescrevia config\config.json DE PRODUÇÃO e restaurava
+        no finally. Funcionava — até o portão ganhar prazo e passar a MATAR a
+        suíte que estoura o tempo: TerminateProcess não roda finally, e a
+        configuração real ficaria apontando para uma sonda que não existe.
+
+        A trava nova de um lugar abriu a janela em outro. Copiar o projeto custa
+        centésimos de segundo e fecha a categoria inteira.
+    #>
+    $proj = Join-Path ([System.IO.Path]::GetTempPath()) ('wm-exam-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     try {
-        [System.IO.File]::WriteAllText($sondaRuim,
+        New-Item -ItemType Directory -Path $proj -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $root 'src')    -Destination $proj -Recurse -Force
+        Copy-Item -LiteralPath (Join-Path $root 'config') -Destination $proj -Recurse -Force
+
+        [System.IO.File]::WriteAllText((Join-Path $proj 'src\probes\Probe-TesteQueFalha.ps1'),
             "param(`$Facts, `$TimeoutSec, `$WindowDays)`r`n@{ ok = `$false; reason = 'falha proposital' }`r`n",
             (New-Object System.Text.UTF8Encoding($true)))
 
-        $c = $cfgOrig | ConvertFrom-Json
+        $cfgP = Join-Path $proj 'config\config.json'
+        $c = (Get-Content $cfgP -Raw -Encoding UTF8) | ConvertFrom-Json
         $c.exam.probes = @([pscustomobject]@{ name = 'TesteQueFalha'; key = 'ruim' })
         [System.IO.File]::WriteAllText($cfgP, (ConvertTo-Json -InputObject $c -Depth 14), (New-Object System.Text.UTF8Encoding($false)))
 
-        $ex2 = & (Join-Path $root 'src\Invoke-Exam.ps1') -PassThru -NoWrite
-        $cob2 = if ($ex2.coverage -is [System.Collections.IDictionary]) { $ex2.coverage } else { $ex2.coverage.PSObject.Properties }
+        $ex2 = & (Join-Path $proj 'src\Invoke-Exam.ps1') -PassThru -NoWrite
 
         Assert-True ($null -eq $ex2.ruim) 'sonda que falhou deixa NULO, não objeto vazio'
         Assert-True ((@($ex2.PSObject.Properties.Name) -contains 'ruim')) 'mas a chave existe, para a ausência ser visível'
         $motivo = if ($ex2.coverage -is [System.Collections.IDictionary]) { $ex2.coverage['ruim'] } else { $ex2.coverage.ruim }
         Assert-True ($motivo -match 'falha proposital') 'e o motivo da falha fica na cobertura'
         Assert-True ($ex2.complete -eq $false) 'e o exame se declara incompleto'
+
+        # E a prova de que o teste não encostou no projeto de verdade.
+        Assert-True (-not (Test-Path (Join-Path $root 'src\probes\Probe-TesteQueFalha.ps1'))) 'a sonda de teste nunca entrou no projeto real'
     } finally {
-        [System.IO.File]::WriteAllText($cfgP, $cfgOrig, (New-Object System.Text.UTF8Encoding($true)))
-        Remove-Item -LiteralPath $sondaRuim -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
     }
 
 } finally { }

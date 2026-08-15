@@ -16,19 +16,33 @@
 
     Isso não é um defeito de teste: é um defeito no instrumento que declara que
     os testes passaram, e ele invalida retroativamente toda afirmação de verde
-    deste projeto. Três defesas agora, porque uma só já se provou insuficiente:
+    deste projeto. As defesas foram crescendo à medida que cada verificação
+    adversarial furou a anterior:
 
       1. EXECUÇÃO ISOLADA. Cada suíte roda num processo próprio, cujo código de
          saída é dela e de mais ninguém. Estouro vira código != 0 de verdade.
-      2. PISO DE TESTES. Cada suíte declara quantos testes ela tinha da última
-         vez que este arquivo foi atualizado. Perder testes em silêncio — por
-         arquivo esvaziado, por 'return' precoce, por bloco que deixou de rodar
-         — passa a ser vermelho.
-      3. RESUMO OBRIGATÓRIO. A linha 'N passou, M falhou' precisa existir e ser
-         lida. Suíte que não a imprime não terminou, por mais que saia com zero.
+      2. PISO POR SUÍTE. Cada uma declara quantos testes tinha da última vez que
+         este arquivo foi atualizado. Perder testes em silêncio vira vermelho.
+      3. RESUMO OBRIGATÓRIO, E ÚNICO. A linha 'N passou, M falhou' precisa
+         existir e ser uma só. Duas linhas de resumo é vermelho: não dá para
+         saber qual é a verdadeira.
+      4. RESUMO CONFERIDO CONTRA AS LINHAS IMPRESSAS. TestKit imprime uma linha
+         por teste; o resumo tem de bater com a contagem delas. Suíte que
+         imprime o resumo sem rodar teste nenhum é pega aqui.
+      5. VARREDURA DE DIRETÓRIO. Arquivo Test-*.ps1 que não está na lista é
+         vermelho — senão apagar uma linha da lista some com uma suíte inteira.
+      6. PISO GLOBAL sobre o total, como rede para o que os pisos por suíte não
+         veem.
+      7. PRAZO, por suíte e no conjunto. Suíte que trava não pode segurar o
+         portão para sempre, e a soma dos prazos não pode virar horas.
 
     O piso é atualizado À MÃO quando testes são acrescentados. Isso é de
     propósito: se ele se ajustasse sozinho, não seria piso.
+
+    O QUE O PORTÃO NÃO PEGA, e está dito em vez de negado: teste que virou
+    vácuo. Vinte 'Assert-True $true' imprimem vinte linhas legítimas, e nenhuma
+    contagem os separa de vinte testes de verdade — só leitura humana ou
+    análise de mutação, que é a razão de a verificação adversarial existir.
 #>
 [CmdletBinding()]
 param(
@@ -49,21 +63,50 @@ param(
 $suites = @(
     @{ file = 'Test-Rollup.ps1';      min = 147 }
     @{ file = 'Test-Rules.ps1';       min = 135 }
-    @{ file = 'Test-Laudo.ps1';       min = 105 }
+    @{ file = 'Test-Laudo.ps1';       min = 117 }
     @{ file = 'Test-LaudoDriver.ps1'; min = 23  }
     @{ file = 'Test-Report.ps1';      min = 60  }
-    @{ file = 'Test-Exam.ps1';        min = 30  }
-    @{ file = 'Test-Gate.ps1';        min = 16  }
+    @{ file = 'Test-Exam.ps1';        min = 33  }
+    @{ file = 'Test-Gate.ps1';        min = 27  }
     @{ file = 'Test-Drivers.ps1';     min = 56  }
 )
 
 if ($SuiteSpec) {
-    $suites = @(
-        $SuiteSpec -split ',' | Where-Object { $_ } | ForEach-Object {
-            $par = $_ -split ':'
-            @{ file = $par[0].Trim(); min = [int]$par[1] }
+    <#
+        SPEC ILEGÍVEL É ERRO FATAL, não lista vazia.
+
+        Medido no código anterior: '-SuiteSpec a:b' fazia [int]'b' lançar erro
+        NÃO fatal, a lista saía vazia, o piso global virava 0, e o portão
+        imprimia "TODAS AS SUITES PASSARAM" tendo rodado ZERO suítes. É a forma
+        exata do defeito que este arquivo existe para não ter — desta vez dentro
+        do próprio instrumento de medida.
+
+        Nome de suíte é confinado ao diretório: sem separador de caminho, sem
+        '..'. A costura de teste não pode virar um jeito de o portão executar
+        arquivo arbitrário.
+    #>
+    $lista = New-Object System.Collections.ArrayList
+    foreach ($item in ($SuiteSpec -split ',')) {
+        if ([string]::IsNullOrWhiteSpace($item)) { continue }
+        $par = $item -split ':'
+        $piso = 0
+        if ($par.Count -ne 2 -or -not [int]::TryParse($par[1].Trim(), [ref]$piso)) {
+            Write-Error "SuiteSpec ilegível em '$item' — o formato é arquivo:piso"
+            exit 2
         }
-    )
+        $arq = $par[0].Trim()
+        if ($arq -match '[\\/]' -or $arq -match '\.\.') {
+            Write-Error "SuiteSpec com caminho em '$arq' — só nome de arquivo dentro do diretório de suítes"
+            exit 2
+        }
+        [void]$lista.Add(@{ file = $arq; min = $piso })
+    }
+    $suites = @($lista)
+}
+
+if (@($suites).Count -eq 0) {
+    Write-Error 'nenhuma suíte a executar: um portão sem suíte não aprova nada'
+    exit 2
 }
 
 $dir     = if ($SuiteDir) { $SuiteDir } else { $PSScriptRoot }
@@ -79,16 +122,30 @@ $totalOk = 0
     apenas com um total menor — e ninguém confere total de cabeça. Agora a lista
     é confrontada com o diretório: arquivo Test-*.ps1 que ninguém roda acusa.
 #>
+# O filtro nunca devolve TestKit.ps1 — a exclusão que havia aqui era código
+# morto com cara de defesa, e isso é pior que não ter defesa nenhuma.
 $naDisco = @(
     Get-ChildItem -LiteralPath $dir -Filter 'Test-*.ps1' -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -ne 'TestKit.ps1' } | ForEach-Object { $_.Name }
+        ForEach-Object { $_.Name }
 )
 $naLista = @($suites | ForEach-Object { $_.file })
 foreach ($f in $naDisco) {
     if ($naLista -notcontains $f) { [void]$falhas.Add("$f existe em tests\ e não está na lista do portão: ninguém o executa") }
 }
 
+<#
+    TETO GLOBAL DE TEMPO. Com prazo só por suíte, oito suítes travadas custavam
+    oito prazos somados — 80 minutos antes de qualquer veredito, que é o mesmo
+    que não ter portão numa integração contínua.
+#>
+$relogio = [System.Diagnostics.Stopwatch]::StartNew()
+$tetoGlobalSeg = [Math]::Max($SuiteTimeoutSec * 2, 900)
+
 foreach ($s in $suites) {
+    if ($relogio.Elapsed.TotalSeconds -gt $tetoGlobalSeg) {
+        [void]$falhas.Add("o portão passou de $tetoGlobalSeg s no total e parou antes de $($s.file)")
+        break
+    }
     $p = Join-Path $dir $s.file
     ""
     "##################  $($s.file)  ##################"
@@ -152,6 +209,29 @@ foreach ($s in $suites) {
     $falhou = [int]$m.Groups[2].Value
     $totalOk += $passou
 
+    <#
+        O RESUMO É CONFERIDO CONTRA AS LINHAS IMPRESSAS.
+
+        Eu havia escrito, no teste deste portão, que uma suíte capaz de imprimir
+        o resumo sem rodar teste nenhum era indetectável e "não tem como" pegar.
+        Era falso, e a verificação adversarial mostrou como: TestKit imprime
+        exatamente uma linha por teste — '   ok    nome' ou '   FALHA nome'.
+        Contar essas linhas e comparar com o resumo separa a suíte que trabalhou
+        da que só disse ter trabalhado.
+
+        Continua fora do alcance: teste que virou vácuo. Vinte 'Assert-True
+        $true' imprimem vinte linhas legítimas e nenhuma contagem os distingue —
+        só leitura humana ou análise de mutação. ESSA limitação é real, e agora
+        é a única.
+    #>
+    $linhasOk    = @([regex]::Matches($texto, '(?m)^\s+ok\s')).Count
+    $linhasFalha = @([regex]::Matches($texto, '(?m)^\s+FALHA\s')).Count
+
+    if ($linhasOk -ne $passou -or $linhasFalha -ne $falhou) {
+        [void]$falhas.Add(
+            "$($s.file): o resumo diz $passou/$falhou mas imprimiu $linhasOk/$linhasFalha linhas de teste — o resumo não bate com o que rodou")
+    }
+
     if ($codigo -ne 0) { [void]$falhas.Add("$($s.file): código de saída $codigo") }
     if ($falhou -gt 0) { [void]$falhas.Add("$($s.file): $falhou teste(s) falharam") }
     if ($passou -lt [int]$s.min) {
@@ -163,12 +243,19 @@ foreach ($s in $suites) {
     PISO GLOBAL, além do piso por suíte. É a rede que pega perda de teste em
     qualquer lugar — inclusive nos casos que o piso por suíte não vê, porque a
     suíte inteira deixou de ser executada.
+
+    SEM a condição '-not $SuiteDir' que havia aqui. Ela desligava o piso global
+    justamente no modo que Test-Gate.ps1 usa para aferir o portão — a costura
+    construída para testar a trava era a mesma coisa que a desligava, e a
+    mutação que a removia passava com dezesseis testes verdes. Não há motivo
+    para a exceção: o piso é somado DA LISTA recebida, então vale igual para
+    lista sintética.
 #>
 # Soma à mão: Measure-Object -Property não enxerga CHAVE de hashtable, só
 # propriedade de objeto — e falha em vez de devolver zero.
 $pisoTotal = 0
 foreach ($s in $suites) { $pisoTotal += [int]$s.min }
-if (-not $SuiteDir -and $totalOk -lt $pisoTotal) {
+if ($totalOk -lt $pisoTotal) {
     [void]$falhas.Add("total de $totalOk testes, abaixo do piso global de $pisoTotal")
 }
 

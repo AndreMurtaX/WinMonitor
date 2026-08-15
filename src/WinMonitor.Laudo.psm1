@@ -459,11 +459,30 @@ function Test-WMLaudoNumbers {
         foreach ($e in @($a.evidence)) { [void]$literais.Add([string]$e.metric) }
     }
     if ($Package.series)  { foreach ($k in (Get-WMNodeKeys $Package.series)) { [void]$literais.Add([string]$k) } }
+    <#
+        A chave de cobertura entra INTEIRA e também sem o sufixo '#métrica'.
+
+        Regra relativa gera chave como 'R-GPU-TEMP-DRIFT#gpu.0.tempCByLoad...',
+        e o identificador da regra é só o pedaço antes do '#'. Test-WMLaudoRuleIds
+        já fazia o split; esta função não fazia. Sobre o MESMO dado, uma guarda
+        aceitava o id e a outra o via como texto desconhecido — e num id com
+        dígito, como R-GPU-TEMP-SPEC-3080, o 3080 virava número inventado num
+        laudo honesto.
+
+        Pior: a forma MAIS correta era a que reprovava. Declarar o id puro (que é
+        o certo) falhava; declarar a chave com o caminho colado passava.
+    #>
     if ($Package.coverage) {
         foreach ($b in 'unsourced', 'malformed', 'noData', 'noBaseline', 'notApplicable') {
-            foreach ($k in (Get-WMNodeKeys (Get-WMNodeChild $Package.coverage $b))) { [void]$literais.Add([string]$k) }
+            foreach ($k in (Get-WMNodeKeys (Get-WMNodeChild $Package.coverage $b))) {
+                [void]$literais.Add([string]$k)
+                [void]$literais.Add(([string]$k -split '#')[0])
+            }
         }
-        foreach ($k in @($Package.coverage.evaluated)) { [void]$literais.Add([string]$k) }
+        foreach ($k in @($Package.coverage.evaluated)) {
+            [void]$literais.Add([string]$k)
+            [void]$literais.Add(([string]$k -split '#')[0])
+        }
     }
     [void]$literais.Add([string]$Package.window)
     if ($Package.previous) { [void]$literais.Add([string]$Package.previous.window) }
@@ -829,6 +848,24 @@ function Test-WMTrue {
     [bool]$Value
 }
 
+<#
+    Conta itens de verdade num campo que pode vir como lista, nulo, vazio ou
+    escalar.
+
+    Existe porque @($null).Count é UM em PowerShell, não zero — e @('') também.
+    A armadilha já mordeu este projeto na escala de severidade, está registrada,
+    e mesmo assim voltou: o ramo que confere 'cobertura completa e notVerified
+    preenchido' reprovava laudo honesto cujo notVerified era ausente ou nulo,
+    afirmando que o campo estava PREENCHIDO. A guarda dizia o contrário do que
+    tinha acontecido, que é a pior coisa que uma mensagem de erro pode fazer.
+#>
+function Get-WMRealCount {
+    param($Value)
+    @($Value | Where-Object {
+        $null -ne $_ -and -not ($_ -is [string] -and [string]::IsNullOrWhiteSpace($_))
+    }).Count
+}
+
 function Test-WMLaudoShape {
     param(
         [Parameter(Mandatory)]$Laudo,
@@ -902,7 +939,9 @@ function Test-WMLaudoShape {
         foreach ($n in @($Laudo.notVerified)) {
             if ($null -eq $n) { continue }
             $id = if ($n -is [string]) { [string]$n } else { [string]$n.ruleId }
-            if (-not [string]::IsNullOrWhiteSpace($id)) { [void]$declaradas.Add(($id -split '#')[0]) }
+            # Trim: sem ele, ' R-CPU-TEMP-SPEC' reprovava com DUAS mensagens
+            # visualmente idênticas ao id correto — diagnóstico ilegível.
+            if (-not [string]::IsNullOrWhiteSpace($id)) { [void]$declaradas.Add((($id -split '#')[0]).Trim()) }
         }
 
         $faltando = @($lacunas | Where-Object { -not $declaradas.Contains($_) })
@@ -940,16 +979,29 @@ function Test-WMLaudoShape {
             [void]$faltas.Add("notVerified declara o que não é lacuna do pacote: $($intrusos -join ', ')")
         }
     }
-    elseif (@($Laudo.notVerified).Count -gt 0) {
+    elseif ($Package.coverage -and (Get-WMRealCount $Laudo.notVerified) -gt 0) {
         <#
             Cobertura COMPLETA e notVerified preenchido: não há lacuna nenhuma
             para declarar, então tudo que estiver ali é invenção. Sem este ramo,
             o bloco acima nem roda e o campo fica livre.
+
+            A condição exige coverage EXISTINDO: sem bloco de cobertura, a falta
+            já foi registrada acima, e dizer "cobertura completa" sobre um pacote
+            que não trouxe cobertura nenhuma seria mais uma mensagem falsa.
         #>
         [void]$faltas.Add('cobertura completa e notVerified preenchido: não há lacuna a declarar')
     }
 
-    if (@($Package.findings).Count -eq 0 -and @($Laudo.observations).Count -gt 0) {
+    <#
+        Get-WMRealCount nos DOIS lados, pelo mesmo motivo de sempre: com
+        observations ausente, @($null).Count é UM e esta linha acusava hipótese
+        num laudo que não tinha hipótese nenhuma.
+
+        Encontrado por execução, depois de eu ter consertado a linha vizinha e
+        não olhado esta. É literalmente o padrão que quatro verificações
+        seguidas apontaram — conserto o ponto exato e paro de olhar em volta.
+    #>
+    if ((Get-WMRealCount $Package.findings) -eq 0 -and (Get-WMRealCount $Laudo.observations) -gt 0) {
         [void]$faltas.Add('pacote sem achados e observations preenchido: hipótese sobre o que ninguém mediu')
     }
 
@@ -993,6 +1045,6 @@ function Get-WMLaudoText {
 
 Export-ModuleMember -Function `
     New-WMLaudoPackage, Get-WMAllowedNumbers, Test-WMLaudoNumbers, Test-WMLaudoRuleIds,
-    Test-WMLaudoFindings, Test-WMLaudoShape, Test-WMTrue,
+    Test-WMLaudoFindings, Test-WMLaudoShape, Test-WMTrue, Get-WMRealCount,
     Get-WMHardwarePhrases, Get-WMSpelledNumbers,
     Get-WMLaudoSystemPrompt, Get-WMLaudoSchema, Get-WMLaudoText

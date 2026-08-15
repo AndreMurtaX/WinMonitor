@@ -524,6 +524,55 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     $comLacuna = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-GPU-TEMP-DRIFT","note":"n"}],"changedSinceLast":"","findings":[],"observations":[]}'
     Assert-True (-not (Test-WMLaudoShape -Laudo $comLacuna -Package $pacC).ok) 'cobertura completa com notVerified preenchido é rejeitada'
 
+    <#
+        @($null).Count É UM. A armadilha já está registrada neste projeto — ela
+        matou a escala de severidade uma vez — e voltou aqui: com cobertura
+        completa, um laudo cujo notVerified era AUSENTE, nulo ou string vazia era
+        REPROVADO com a mensagem "notVerified preenchido". A guarda afirmava o
+        oposto do que tinha acontecido, sobre um laudo honesto.
+    #>
+    <#
+        Os campos AUSENTES de verdade entram nesta lista, não só os presentes e
+        vazios. A primeira versão deste teste trazia sempre "observations":[] nas
+        fixtures — e por isso não pegou que a MESMA armadilha estava na linha
+        vizinha: com observations ausente, @($null).Count valia 1 e a guarda
+        acusava hipótese num laudo que não tinha nenhuma. Achado rodando, depois
+        do teste passar.
+    #>
+    foreach ($j in '{"summary":"x","changedSinceLast":"","findings":[],"observations":[]}',
+                   '{"summary":"x","notVerified":null,"changedSinceLast":"","findings":[],"observations":[]}',
+                   '{"summary":"x","notVerified":"","changedSinceLast":"","findings":[],"observations":[]}',
+                   '{"summary":"x","notVerified":[],"changedSinceLast":"","findings":[],"observations":[]}',
+                   '{"summary":"x"}',
+                   '{"summary":"x","notVerified":null,"observations":null}') {
+        $l = New-Data $j
+        Assert-True (Test-WMLaudoShape -Laudo $l -Package $pacC).ok "campo vazio ou ausente não conta como preenchido: $j"
+    }
+    Assert-Equal 0 (Get-WMRealCount $null) 'Get-WMRealCount de nulo é ZERO, não um'
+    Assert-Equal 0 (Get-WMRealCount '')    'de string vazia também'
+    Assert-Equal 2 (Get-WMRealCount @('a', 'b')) 'e conta certo o que existe'
+
+    <#
+        A chave de cobertura com sufixo '#métrica'. Regra relativa gera
+        'R-X#caminho.da.metrica', e o identificador é só o pedaço antes do '#'.
+        Test-WMLaudoRuleIds já separava; Test-WMLaudoNumbers não — então num id
+        com dígito o número virava órfão em laudo HONESTO. E a forma mais
+        correta, declarar o id puro, era exatamente a que reprovava.
+    #>
+    $SUFIXO = New-Data '{"v":1,"window":"2026-08-15","host":"T","verdict":"normal","findings":[],"coverage":{"complete":false,"evaluated":[],"unsourced":{},"malformed":{},"noData":{},"noBaseline":{"R-GPU-TEMP-SPEC-3080#gpu.0.tempCAllDay.max":"sem linha-base"},"notApplicable":{}}}'
+    $pacSfx = New-WMLaudoPackage -Findings $SUFIXO -Hardware $HW
+
+    foreach ($decl in 'R-GPU-TEMP-SPEC-3080', 'R-GPU-TEMP-SPEC-3080#gpu.0.tempCAllDay.max') {
+        $l = New-Data ('{"summary":"Nada a relatar.","changedSinceLast":"","findings":[],"observations":[],"notVerified":[{"ruleId":"' + $decl + '","note":"sem linha-base"}]}')
+        $sh = Test-WMLaudoShape   -Laudo $l -Package $pacSfx
+        $nu = Test-WMLaudoNumbers -Text (Get-WMLaudoText -Laudo $l) -Package $pacSfx
+        Assert-True ($sh.ok -and $nu.ok) ("declarar a lacuna como '$decl' passa nas duas guardas (órfãos: " + ($nu.orphans -join ', ') + ')')
+    }
+
+    # Espaço sobrando no ruleId não pode virar duas mensagens ilegíveis.
+    $comEspaco = New-Data '{"summary":"x","changedSinceLast":"","findings":[],"observations":[],"notVerified":[{"ruleId":" R-GPU-TEMP-SPEC-3080 ","note":"n"}]}'
+    Assert-True (Test-WMLaudoShape -Laudo $comEspaco -Package $pacSfx).ok 'ruleId com espaço sobrando é aparado, não rejeitado'
+
     # coverage.complete como STRING "false" desligava a guarda inteira.
     $pacStr = $pacV | ConvertTo-Json -Depth 12 | ConvertFrom-Json
     $pacStr.coverage.complete = 'false'
