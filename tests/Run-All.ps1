@@ -8,7 +8,7 @@
 [CmdletBinding()]
 param([switch]$Quiet)
 
-$suites = @('Test-Rollup.ps1', 'Test-Rules.ps1', 'Test-Drivers.ps1')
+$suites = @('Test-Rollup.ps1', 'Test-Rules.ps1', 'Test-Laudo.ps1', 'Test-Drivers.ps1')
 $falhas = 0
 
 foreach ($s in $suites) {
