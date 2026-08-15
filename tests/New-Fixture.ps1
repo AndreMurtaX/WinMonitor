@@ -154,7 +154,9 @@ for ($i = 0; $i -lt $Samples; $i++) {
     $sample = [ordered]@{
         v    = 1
         host = $MachineName
-        at   = $t0.AddMinutes($i).ToString('yyyy-MM-ddTHH:mm:ss.fffzzz')
+        # Invariante: sob th-TH o ano sairia budista e a fixture geraria dado
+        # que a produção nunca geraria.
+        at   = $t0.AddMinutes($i).ToString('yyyy-MM-ddTHH:mm:ss.fffzzz', [System.Globalization.CultureInfo]::InvariantCulture)
         mode = 'patrol'
         upH  = [math]::Round($up, 2)
     }

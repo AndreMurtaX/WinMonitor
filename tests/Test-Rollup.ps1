@@ -446,6 +446,31 @@ try {
     Assert-NotNull $rSem.gpu['0'].tempCByLoad['b75'] 'só a faixa de carga alta existe'
 
     # =====================================================================
+    Start-TestGroup 'Datas não seguem o calendário da cultura  [MUTAÇÃO]'
+
+    <#
+        Numa máquina pt-BR esta correção é indistinguível de não tê-la feito, e
+        por isso ela precisava de um teste que forçasse a cultura: reverter
+        Get-WMDayId e Get-WMTimestamp para a cultura corrente passava verde.
+
+        Sob th-TH o ano sai budista (2569) e sob ar-SA sai Hijri (1448). A ronda
+        gravaria 2569-08-15.jsonl, o padrão de validação de nome casaria, e nada
+        reclamaria — a série histórica simplesmente passaria a ser de outro
+        calendário no meio do caminho.
+    #>
+    $culturaOriginal = [System.Threading.Thread]::CurrentThread.CurrentCulture
+    try {
+        $quando = [datetime]'2026-08-15T13:42:23'
+        foreach ($cult in 'th-TH', 'ar-SA', 'en-US') {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = New-Object System.Globalization.CultureInfo $cult
+            Assert-Equal '2026-08-15' (Get-WMDayId -When $quando) "Get-WMDayId é gregoriano sob $cult"
+            Assert-True ((Get-WMTimestamp -When $quando).StartsWith('2026-08-15T13:42:23')) "Get-WMTimestamp é gregoriano sob $cult"
+        }
+    } finally {
+        [System.Threading.Thread]::CurrentThread.CurrentCulture = $culturaOriginal
+    }
+
+    # =====================================================================
     Start-TestGroup 'NaN e Infinity não são medidas  [MUTAÇÃO]'
 
     Assert-Null (ConvertTo-WMNumber 'NaN')       '"NaN" é rejeitado'

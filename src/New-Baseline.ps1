@@ -117,13 +117,49 @@ foreach ($d in $windowIds) {
 # também não conta: descreve um dia que ainda não terminou.
 $diasValidos = @($rollups | Where-Object { $_.samples -ge $MinSamplesPerDay -and $_.partial -ne $true })
 
-$runs      = 0
+<#
+    Janelas de carga alta contadas em QUALQUER subsistema, não só na CPU.
+
+    Contar apenas a CPU deixava uma máquina GPU-bound — inferência,
+    transcodificação, hospedagem de modelos — permanentemente inelegível: a
+    placa a 90% o dia inteiro com o processador a 20% produzia 0/20, e a única
+    saída era -Force, que grava a fraqueza dentro da linha-base. É o próprio
+    módulo contradizendo o comentário que diz "a placa pode estar a 100%
+    enquanto o processador dorme".
+
+    Por dia toma-se o MÁXIMO entre os subsistemas, não a soma: quando CPU e GPU
+    trabalham juntas, a mesma rajada de trabalho apareceria duas vezes e
+    inflaria a evidência.
+#>
+$runs       = 0
 $diasSemRun = 0
+$fonteRuns  = @{}
+
 foreach ($r in $diasValidos) {
-    $v = $null
-    if ($r.cpu) { $v = $r.cpu.highLoadRuns }
-    if ($null -eq $v) { $diasSemRun++; continue }   # nunca medido: não soma como zero
-    $runs += [int]$v
+    $melhor = $null
+    $quem   = $null
+
+    if ($r.cpu -and $null -ne $r.cpu.highLoadRuns) {
+        $melhor = [int]$r.cpu.highLoadRuns
+        $quem   = 'cpu'
+    }
+    if ($r.gpu) {
+        foreach ($idx in $r.gpu.PSObject.Properties.Name) {
+            $g = $r.gpu.$idx.highLoadRuns
+            if ($null -eq $g) { continue }
+            if ($null -eq $melhor -or [int]$g -gt $melhor) {
+                $melhor = [int]$g
+                $quem   = "gpu$idx"
+            }
+        }
+    }
+
+    if ($null -eq $melhor) { $diasSemRun++; continue }   # nunca medido: não soma como zero
+    $runs += $melhor
+    if ($quem) {
+        if (-not $fonteRuns.ContainsKey($quem)) { $fonteRuns[$quem] = 0 }
+        $fonteRuns[$quem] += $melhor
+    }
 }
 
 $okDays = $diasValidos.Count -ge $MinDays
@@ -134,6 +170,7 @@ $okRuns = $runs -ge $MinHighLoadRuns
 "Elegibilidade da linha-base — medida DENTRO desta janela"
 "  dias com >= {0,4} amostras : {1,4}  / {2}   {3}" -f $MinSamplesPerDay, $diasValidos.Count, $MinDays, $(if ($okDays) { 'ok' } else { 'ainda não' })
 "  janelas de carga alta      : {0,4}  / {1}   {2}" -f $runs, $MinHighLoadRuns, $(if ($okRuns) { 'ok' } else { 'ainda não' })
+if ($fonteRuns.Count -gt 0)  { "  origem das janelas         : {0}" -f (($fonteRuns.Keys | Sort-Object | ForEach-Object { "$_=$($fonteRuns[$_])" }) -join ', ') }
 if ($semRollup.Count -gt 0)  { "  dias sem agregado utilizável : {0}" -f ($semRollup -join ', ') }
 if ($diasSemRun -gt 0)       { "  dias sem medida de carga     : {0}" -f $diasSemRun }
 ""
@@ -257,6 +294,8 @@ $baseline = [ordered]@{
         highLoadRuns     = $runs
         daysWithoutRollup = $semRollup
         minSamplesPerDay = $MinSamplesPerDay
+        # Qual subsistema forneceu as janelas de carga da evidência.
+        highLoadRunsBy   = $fonteRuns
         # GPUs que nunca chegaram à faixa de carga alta nesta janela: ficam sem
         # referência térmica, e quem for comparar precisa saber disso.
         gpusWithoutReference = $gpusSemRef

@@ -37,14 +37,21 @@ $fixture = Join-Path $PSScriptRoot 'New-Fixture.ps1'
 $tmp     = Join-Path ([System.IO.Path]::GetTempPath()) ('wm-drv-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
-$hoje = Get-Date -Format 'yyyy-MM-dd'
+<#
+    Cultura invariante aqui também, pelo mesmo motivo da produção — e por um
+    adicional: se o teste calcular "hoje" pela cultura corrente enquanto a
+    produção usa Get-WMDayId, os dois discordam de que dia é hoje sob th-TH e a
+    suíte falha por assimetria, não por defeito.
+#>
+$INV  = [System.Globalization.CultureInfo]::InvariantCulture
+$hoje = (Get-Date).ToString('yyyy-MM-dd', $INV)
 
 # Dias consecutivos terminando ontem: nunca colidem com o dia corrente.
 function Get-DayIds {
     param([int]$Count, [int]$EndDaysAgo = 1)
     $out = @()
     for ($i = $Count; $i -ge 1; $i--) {
-        $out += (Get-Date).AddDays(-($EndDaysAgo + $i - 1)).ToString('yyyy-MM-dd')
+        $out += (Get-Date).AddDays(-($EndDaysAgo + $i - 1)).ToString('yyyy-MM-dd', $INV)
     }
     $out
 }
@@ -135,6 +142,27 @@ function Add-TwoGpuDay {
         $up   = (100 + $i / 60.0).ToString('0.00', $inv)
         $l += ('{{"v":1,"host":"FIXTURE-HOST","at":"{0}T{1:D2}:{2:D2}:00.000-03:00","mode":"patrol","upH":{3},"cpu":{{"util":{4},"mhz":4800}},"gpu":[{{"idx":0,"util":{4},"tempC":{5}}},{{"idx":1,"util":3,"tempC":38}}],"cov":{{"ok":[],"gap":{{}}}}}}' -f `
               $Day, [int]($i / 60), ($i % 60), $up, $u, $t0)
+    }
+    [System.IO.File]::WriteAllLines((Join-Path $Proj "data\patrol\$Day.jsonl"), $l, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+<#
+    Dia de máquina GPU-bound: a placa trabalha em rajadas e o processador nunca
+    passa de 20%. É o perfil de um servidor de inferência ou de transcodificação
+    — e é o caso em que contar janelas de carga só na CPU deixa a linha-base
+    permanentemente inelegível.
+#>
+function Add-GpuBoundDay {
+    param([string]$Proj, [string]$Day, [int]$Samples = 200)
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $l = @()
+    for ($i = 0; $i -lt $Samples; $i++) {
+        $alta = (($i -ge 5 -and $i -lt 25) -or ($i -ge 105 -and $i -lt 125))
+        $gu   = $(if ($alta) { 90 } else { 4 })
+        $gt   = $(if ($alta) { 79 } else { 39 })
+        $up   = (100 + $i / 60.0).ToString('0.00', $inv)
+        $l += ('{{"v":1,"host":"FIXTURE-HOST","at":"{0}T{1:D2}:{2:D2}:00.000-03:00","mode":"patrol","upH":{3},"cpu":{{"util":20,"mhz":3900}},"gpu":[{{"idx":0,"util":{4},"tempC":{5}}}],"cov":{{"ok":[],"gap":{{}}}}}}' -f `
+              $Day, [int]($i / 60), ($i % 60), $up, $gu, $gt)
     }
     [System.IO.File]::WriteAllLines((Join-Path $Proj "data\patrol\$Day.jsonl"), $l, (New-Object System.Text.UTF8Encoding($false)))
 }
@@ -344,6 +372,34 @@ try {
     Assert-Null    $b10.profile.gpu.'1'.tempCByLoad.b75 'a GPU 1, sempre ociosa, não tem'
     Assert-Equal 1 @($b10.evidence.gpusWithoutReference).Count 'e fica registrado que uma GPU ficou sem referência'
     Assert-Equal '1' @($b10.evidence.gpusWithoutReference)[0] 'nomeando qual'
+
+    # =====================================================================
+    Start-TestGroup 'New-Baseline: máquina GPU-bound fica elegível'
+
+    <#
+        Contar janelas de carga só na CPU deixava um servidor de inferência
+        permanentemente inelegível: placa a 90% o dia inteiro, processador a
+        20%, evidência 0/20, e a única saída era -Force — que grava a fraqueza
+        dentro da linha-base. Agora a janela conta em qualquer subsistema, com
+        o máximo por dia para não contar a mesma rajada duas vezes.
+    #>
+    $p12 = New-TempProject
+    foreach ($d in $d14) { Add-GpuBoundDay $p12 $d -Samples 200 }
+    & (Join-Path $p12 'src\Invoke-Rollup.ps1') | Out-Null
+
+    $s12 = & (Join-Path $p12 'src\New-Baseline.ps1') -CheckOnly 2>&1 | Out-String
+    Assert-True (Test-Saida $s12 'Pronto para congelar') 'GPU trabalhando com CPU ociosa é evidência válida'
+    Assert-True (Test-Saida $s12 'gpu0=28')              'e a origem das janelas fica declarada'
+
+    & (Join-Path $p12 'src\New-Baseline.ps1') -Reason 'servidor gpu-bound' 3>&1 2>&1 | Out-Null
+    $b12 = Read-Json (Join-Path $p12 'data\baseline\baseline.json')
+    Assert-NotNull $b12 'e a linha-base congela sem -Force'
+    Assert-Equal $false $b12.forced 'sem carregar fraqueza registrada'
+    Assert-Equal 28 $b12.evidence.highLoadRuns 'com as 28 janelas da GPU como evidência'
+    Assert-NotNull $b12.profile.gpu.'0'.tempCByLoad.b75 'e a referência térmica da placa está lá'
+
+    # =====================================================================
+    Start-TestGroup 'New-Baseline: as recusas que continuam valendo'
 
     # Mas se NENHUMA GPU tiver referência, continua recusando.
     $p11 = New-TempProject
