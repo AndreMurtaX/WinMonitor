@@ -400,6 +400,134 @@ try {
     Assert-GreaterThan $altaRefrig  6.0 'sob carga, refrigeração degradando sobe igual'
     Assert-GreaterThan ($baixaSala - $baixaRefrig) 6.0 'só a visão por faixa separa as duas causas'
 
+    <#
+        O mesmo caso com degradação CONTÍNUA em vez de degrau.
+
+        O teste acima usa um degrau que cai exatamente em carga 75 — a mesma
+        fronteira usada para estratificar — o que garante zero na faixa ociosa
+        por construção. Degradação real é proporcional à potência dissipada e
+        não coincide com fronteira nenhuma. Aqui a margem encolhe, e é honesto
+        que ela apareça encolhida.
+    #>
+    $refrigLin = New-Day '2026-03-04' -Samples 1440 -Bursts 6 -BurstLen 20 -ThermalOffsetHigh 8 -ThermalModel Linear -Seed 101
+    $rLin = New-WMDayRollup -Path $refrigLin -DayId 'l' -Bands $bands
+    $baixaLin = $rLin.gpu['0'].tempCByLoad['b00'].p50 - $rBase.gpu['0'].tempCByLoad['b00'].p50
+    $altaLin  = $rLin.gpu['0'].tempCByLoad['b75'].p95 - $rBase.gpu['0'].tempCByLoad['b75'].p95
+    "      modelo continuo:  b00 {0,5:N1} C   b75 {1,5:N1} C" -f $baixaLin, $altaLin
+    ""
+    Assert-LessThan    $baixaLin 2.0 'mesmo contínua, a degradação quase não aparece em repouso'
+    Assert-GreaterThan $altaLin  6.0 'e aparece inteira sob carga'
+
+    <#
+        O regime em que a tese NÃO se aplica, afirmado em vez de escondido:
+        máquina que nunca fica ociosa não tem faixa b00, e aí não há como
+        separar sala quente de refrigeração degradando por este método.
+    #>
+    $semOcio = New-Day '2026-03-05' -Samples 300 -Bursts 0 -IdleMin 80 -IdleMax 96 -Seed 111
+    $rSem = New-WMDayRollup -Path $semOcio -DayId 'so' -Bands $bands
+    Assert-Null    $rSem.gpu['0'].tempCByLoad['b00'] 'máquina sem ócio não produz faixa ociosa'
+    Assert-NotNull $rSem.gpu['0'].tempCByLoad['b75'] 'só a faixa de carga alta existe'
+
+    # =====================================================================
+    Start-TestGroup 'NaN e Infinity não são medidas  [MUTAÇÃO]'
+
+    Assert-Null (ConvertTo-WMNumber 'NaN')       '"NaN" é rejeitado'
+    Assert-Null (ConvertTo-WMNumber 'Infinity')  '"Infinity" é rejeitado'
+    Assert-Null (ConvertTo-WMNumber '-Infinity') '"-Infinity" é rejeitado'
+    Assert-Null (ConvertTo-WMNumber ([double]::NaN)) 'double NaN também'
+
+    <#
+        NaN é double válido e TryParse o aceita. Se passar, ele conta como
+        medida (n sobe, gaps fica em zero) e, como [Array]::Sort o põe na
+        frente, corrompe mínimo e mediana — e o agregado contaminado relê sem
+        erro, atravessando até a linha-base.
+    #>
+    $fnan = Join-Path $tmp '2026-04-01.jsonl'
+    $ln = @()
+    foreach ($t in 40, 41, 43, 44) {
+        $ln += ('{{"v":1,"host":"FIXTURE-HOST","at":"2026-04-01T0{0}:00:00.000-03:00","mode":"patrol","upH":100,"gpu":[{{"idx":0,"util":10,"tempC":{1}}}],"cov":{{"ok":[],"gap":{{}}}}}}' -f ($t - 40), $t)
+    }
+    $ln += '{"v":1,"host":"FIXTURE-HOST","at":"2026-04-01T05:00:00.000-03:00","mode":"patrol","upH":100,"gpu":[{"idx":0,"util":10,"tempC":"NaN"}],"cov":{"ok":[],"gap":{}}}'
+    [System.IO.File]::WriteAllLines($fnan, $ln, (New-Object System.Text.UTF8Encoding($false)))
+
+    $rnan = New-WMDayRollup -Path $fnan -DayId '2026-04-01' -Bands $bands
+    Assert-Equal 4  $rnan.gpu['0'].tempCAllDay.n    'o NaN não é contado como medida'
+    Assert-Equal 1  $rnan.gpu['0'].tempCAllDay.gaps 'e fica registrado como lacuna'
+    Assert-Equal 40 $rnan.gpu['0'].tempCAllDay.min  'o mínimo não é corrompido'
+    Assert-Equal 42 $rnan.gpu['0'].tempCAllDay.p50  'nem a mediana'
+
+    # =====================================================================
+    Start-TestGroup 'Lacuna preservada em TODOS os subsistemas  [MUTAÇÃO]'
+
+    <#
+        A regra 2 do módulo diz que séries preservam buracos "até o fim, não só
+        na função onde é conveniente". A suíte só verificava isso na CPU — e o
+        caminho da GPU, idêntico e correto, podia ser apagado sem que nada
+        acusasse. Um teste por subsistema.
+    #>
+    $fgap = New-Day '2026-04-02' -Samples 60 -Bursts 1 -BurstLen 5 -DropProbe gpu -DropFrom 7 -DropCount 1 -Seed 121
+    $rgap = New-WMDayRollup -Path $fgap -DayId '2026-04-02' -Bands $bands
+    Assert-Equal 1 $rgap.cpu.highLoadRuns        'a CPU, que não teve lacuna, conta sua janela'
+    Assert-Equal 0 $rgap.gpu['0'].highLoadRuns   'a GPU, que teve, NÃO cola as duas metades'
+    Assert-Equal 1 $rgap.probeGaps.gpu           'e a lacuna da GPU foi declarada'
+
+    $fmem = New-Day '2026-04-03' -Samples 40 -Bursts 0 -DropProbe mem -DropFrom 10 -DropCount 6 -Seed 131
+    $rmem = New-WMDayRollup -Path $fmem -DayId '2026-04-03' -Bands $bands
+    Assert-Equal 34 $rmem.mem.usedPct.n    'memória: só as amostras medidas contam'
+    Assert-Equal 6  $rmem.mem.usedPct.gaps 'memória: as seis lacunas ficam registradas'
+    Assert-GreaterThan $rmem.mem.usedPct.min 0 'memória: lacuna não vira mínimo zero'
+
+    $fsto = New-Day '2026-04-04' -Samples 40 -Bursts 0 -DropProbe sto -DropFrom 10 -DropCount 6 -Seed 141
+    $rsto = New-WMDayRollup -Path $fsto -DayId '2026-04-04' -Bands $bands
+    Assert-Equal 34 $rsto.sto.volFreeGB['C:'].n    'disco: só as amostras medidas contam'
+    Assert-Equal 6  $rsto.sto.volFreeGB['C:'].gaps 'disco: as seis lacunas ficam registradas'
+    Assert-GreaterThan $rsto.sto.volFreeGB['C:'].min 0 'disco: lacuna não vira espaço livre zero'
+
+    # =====================================================================
+    Start-TestGroup 'Mais de uma GPU  [MUTAÇÃO]'
+
+    # A suíte inteira só tinha máquinas de uma GPU. Esta tem duas, e a segunda
+    # nunca sai do ócio.
+    $f2g = Join-Path $tmp '2026-04-05.jsonl'
+    $l2 = @()
+    for ($i = 0; $i -lt 10; $i++) {
+        $l2 += ('{{"v":1,"host":"FIXTURE-HOST","at":"2026-04-05T00:{0:D2}:00.000-03:00","mode":"patrol","upH":100,"gpu":[{{"idx":0,"util":90,"tempC":78}},{{"idx":1,"util":4,"tempC":40}}],"cov":{{"ok":[],"gap":{{}}}}}}' -f $i)
+    }
+    [System.IO.File]::WriteAllLines($f2g, $l2, (New-Object System.Text.UTF8Encoding($false)))
+    $r2g = New-WMDayRollup -Path $f2g -DayId '2026-04-05' -Bands $bands
+
+    Assert-Equal 2 $r2g.gpu.Count 'as duas GPUs são agregadas separadamente'
+    Assert-NotNull $r2g.gpu['0'].tempCByLoad['b75'] 'a GPU 0 tem faixa de carga alta'
+    Assert-Null    $r2g.gpu['1'].tempCByLoad['b75'] 'a GPU 1, sempre ociosa, não tem'
+    Assert-Equal 78 $r2g.gpu['0'].tempCByLoad['b75'].p50 'e cada uma fica com a SUA temperatura'
+    Assert-Equal 40 $r2g.gpu['1'].tempCByLoad['b00'].p50 'sem misturar com a outra'
+
+    # =====================================================================
+    Start-TestGroup 'Ordem dos arquivos não inventa reinício  [MUTAÇÃO]'
+
+    # Uptime ENCADEADO: o dia B começa onde o A terminou, como numa máquina que
+    # não reiniciou. Passados ao contrário, a emenda produziria um salto para
+    # trás e um reinício que não houve.
+    $o1 = New-Day '2026-04-06' -Samples 30 -Bursts 0 -UptimeStartH 100   -Seed 151
+    $o2 = New-Day '2026-04-07' -Samples 30 -Bursts 0 -UptimeStartH 100.5 -Seed 152
+    $rFwd = New-WMDayRollup -Path @($o1, $o2) -DayId 'f' -Bands $bands
+    $rRev = New-WMDayRollup -Path @($o2, $o1) -DayId 'r' -Bands $bands
+    Assert-Equal 0 $rFwd.reboots 'na ordem certa, nenhum reinício'
+    Assert-Equal $rFwd.reboots $rRev.reboots 'e a ordem de entrada não muda o resultado'
+
+    # =====================================================================
+    Start-TestGroup 'outOfBand conta carga fora de escala, não ausência de CPU'
+
+    $fnc = Join-Path $tmp '2026-04-08.jsonl'
+    $lnc = @()
+    for ($i = 0; $i -lt 5; $i++) {
+        $lnc += ('{{"v":1,"host":"FIXTURE-HOST","at":"2026-04-08T00:{0:D2}:00.000-03:00","mode":"patrol","upH":100,"cov":{{"ok":[],"gap":{{"cpu":"sonda morta"}}}}}}' -f $i)
+    }
+    [System.IO.File]::WriteAllLines($fnc, $lnc, (New-Object System.Text.UTF8Encoding($false)))
+    $rnc = New-WMDayRollup -Path $fnc -DayId '2026-04-08' -Bands $bands
+    Assert-Equal 0 $rnc.cpu.outOfBand 'cinco amostras sem CPU não são cinco cargas fora de faixa'
+    Assert-Equal 5 $rnc.probeGaps.cpu 'elas são cinco lacunas declaradas'
+
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -48,8 +48,26 @@ param(
         nos dois casos e não sabe dizer qual aconteceu. A visão por faixa sabe.
     #>
     [double]$ThermalOffsetAll = 0,
+    <#
+        Forma da degradação.
+
+        Step   degrau: soma tudo quando carga >= 75. Simples, mas o degrau cai
+               EXATAMENTE na fronteira b50/b75 usada para estratificar, o que
+               garante zero na faixa ociosa. Bom para o caso limpo.
+        Linear proporcional à carga, com o valor cheio em 90%. É a forma real de
+               dissipação degradando, e não coincide com nenhuma fronteira.
+    #>
+    [ValidateSet('Step', 'Linear')][string]$ThermalModel = 'Step',
     [switch]$GpuAntiCorrelated,
+    # Faixa da carga "ociosa". Subir os dois produz um dia SEM ócio — o regime
+    # em que não existe faixa b00 e a tese da estratificação não se aplica.
+    [int]$IdleMin = 3,
+    [int]$IdleMax = 16,
     [int]$RebootAt = -1,
+    # Uptime no início do dia. Dias consecutivos de uma máquina que não
+    # reiniciou precisam ENCADEAR: sem isso, todo dia começa em 100 h e a
+    # emenda entre dois dias parece um reinício que não houve.
+    [double]$UptimeStartH = 100,
     [int]$ThrottleFrom = -1,
     [int]$ThrottleCount = 0,
     [switch]$EdgeBurstStart,
@@ -70,7 +88,7 @@ Get-Random -SetSeed $Seed | Out-Null
 # ------------------------------------------------------- perfil de carga ----
 
 $cload = New-Object 'double[]' $Samples
-for ($i = 0; $i -lt $Samples; $i++) { $cload[$i] = Get-Random -Minimum 3 -Maximum 16 }
+for ($i = 0; $i -lt $Samples; $i++) { $cload[$i] = Get-Random -Minimum $IdleMin -Maximum $IdleMax }
 
 function Set-Burst {
     param([int]$Start, [int]$Len)
@@ -112,12 +130,18 @@ for ($i = 0; $i -lt $Samples; $i++) {
 
     $gpuTemp = 35.0 + $gl * 0.45 + (Get-Random -Minimum -10 -Maximum 11) / 10.0
     $gpuTemp += $ThermalOffsetAll
-    if ($gl -ge 75) { $gpuTemp += $ThermalOffsetHigh }
+    if ($ThermalModel -eq 'Linear') {
+        # Proporcional à carga, valor cheio em 90%: não coincide com fronteira
+        # nenhuma, então não favorece a estratificação por construção.
+        $gpuTemp += $ThermalOffsetHigh * ($gl / 90.0)
+    } elseif ($gl -ge 75) {
+        $gpuTemp += $ThermalOffsetHigh
+    }
 
     $cpuMhz = 3504 * (0.55 + $cl / 100.0 * 0.90)
 
     # Uptime reinicia: o agregado tem que detectar o reinício no meio do dia.
-    $up = 100 + $i / 60.0
+    $up = $UptimeStartH + $i / 60.0
     if ($RebootAt -ge 0 -and $i -ge $RebootAt) { $up = ($i - $RebootAt) / 60.0 }
 
     $throttling = ($ThrottleCount -gt 0 -and $ThrottleFrom -ge 0 -and

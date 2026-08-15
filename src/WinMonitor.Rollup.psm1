@@ -52,19 +52,33 @@ function ConvertTo-WMNumber {
     param($Value)
     if ($null -eq $Value) { return $null }
     if ($Value -is [bool]) { return $null }
-    if ($Value -is [ValueType]) { return [double]$Value }
-
-    $t = ([string]$Value).Trim()
-    if ([string]::IsNullOrWhiteSpace($t)) { return $null }
 
     $n = 0.0
-    if ([double]::TryParse($t,
-                           [System.Globalization.NumberStyles]::Float,
-                           [System.Globalization.CultureInfo]::InvariantCulture,
-                           [ref]$n)) {
-        return $n
+    if ($Value -is [ValueType]) {
+        $n = [double]$Value
+    } else {
+        $t = ([string]$Value).Trim()
+        if ([string]::IsNullOrWhiteSpace($t)) { return $null }
+        if (-not [double]::TryParse($t,
+                                    [System.Globalization.NumberStyles]::Float,
+                                    [System.Globalization.CultureInfo]::InvariantCulture,
+                                    [ref]$n)) {
+            return $null
+        }
     }
-    return $null
+
+    <#
+        NaN e Infinity são doubles válidos e TryParse os aceita — 'NaN' e
+        'Infinity' entram como número. Não são medidas.
+
+        O estrago é silencioso e persistente: NaN faz n subir e gaps ficar em
+        zero (a ausência vira medida, contra a regra 1 deste módulo), e como
+        [Array]::Sort põe NaN na frente, a mediana e o mínimo saem errados. O
+        agregado contaminado serializa e relê sem erro, então o lixo atravessa
+        até a linha-base.
+    #>
+    if ([double]::IsNaN($n) -or [double]::IsInfinity($n)) { return $null }
+    $n
 }
 
 # Arredondamento comercial. [math]::Round padrão é bancário e faz o máximo sair
@@ -390,14 +404,14 @@ function Get-WMSampleSeries {
 
 # ------------------------------------------------- agregado de uma janela ---
 
-# Soma a contagem de janelas de carga SEGMENTO A SEGMENTO. Devolve $null se
-# nenhum segmento tinha dado — nunca 0, que afirmaria "contei e não havia".
-function Get-WMRunsBySegment {
-    param($Segments, [scriptblock]$Selector, [double]$Threshold = 75, [int]$MinRun = 3)
+# Soma a contagem de janelas de carga sobre séries já montadas, uma por
+# segmento. Devolve $null se nenhum segmento tinha dado — nunca 0, que
+# afirmaria "contei e não havia".
+function Get-WMRunsFromSeries {
+    param($SeriesList, [double]$Threshold = 75, [int]$MinRun = 3)
     $total = $null
-    foreach ($seg in $Segments) {
-        $series = Get-WMSampleSeries -Samples $seg -Selector $Selector
-        $r = Get-WMLoadRuns -Series $series -Threshold $Threshold -MinRun $MinRun
+    foreach ($ser in $SeriesList) {
+        $r = Get-WMLoadRuns -Series $ser -Threshold $Threshold -MinRun $MinRun
         if ($null -ne $r) {
             if ($null -eq $total) { $total = 0 }
             $total += $r
@@ -437,10 +451,20 @@ function New-WMDayRollup {
         throw ("tabela de faixas invalida: " + ($bandProblems -join '; '))
     }
 
+    <#
+        Ordena por nome de arquivo. A ordem importa para UMA coisa: a detecção
+        de reinício, que compara uptime entre amostras consecutivas. Com os dias
+        fora de ordem, o salto de uptime na emenda vira um reinício falso. Os
+        percentis são indiferentes à ordem; esta linha existe só por causa dos
+        reinícios, e é mais barata que documentar um contrato que o chamador
+        pode esquecer.
+    #>
+    $ordered = @($Path | Sort-Object { Split-Path $_ -Leaf })
+
     $segments = @()
     $bad      = 0
     $missing  = 0
-    foreach ($p in $Path) {
+    foreach ($p in $ordered) {
         $r = Read-WMPatrolDay -Path $p
         if ($r.Missing) { $missing++; continue }
         $segments += , (@($r.Samples))
@@ -513,19 +537,21 @@ function New-WMDayRollup {
             $u = ConvertTo-WMNumber $s.cpu.util
             [void]$segUtil.Add($u)
             [void]$cpuUtilAll.Add($u)
-            [void]$cpuPairs.Add([pscustomobject]@{ load = $s.cpu.util; value = $s.cpu.mhz })
+
+            <#
+                Sem bloco cpu não há par a classificar. Acrescentar um par com
+                carga nula fazia a amostra ser contada em outOfBand, misturando
+                "carga fora de escala" com "não houve medida de carga" — que são
+                coisas diferentes e levam a conclusões diferentes.
+            #>
+            if ($null -ne $s.cpu) {
+                [void]$cpuPairs.Add([pscustomobject]@{ load = $s.cpu.util; value = $s.cpu.mhz })
+            }
         }
         $cpuBySeg += , $segUtil.ToArray()
     }
 
-    $cpuRuns = $null
-    foreach ($ser in $cpuBySeg) {
-        $r = Get-WMLoadRuns -Series $ser -Threshold 75 -MinRun 3
-        if ($null -ne $r) {
-            if ($null -eq $cpuRuns) { $cpuRuns = 0 }
-            $cpuRuns += $r
-        }
-    }
+    $cpuRuns = Get-WMRunsFromSeries -SeriesList $cpuBySeg -Threshold 75 -MinRun 3
 
     $cpuDrop = 0
     $roll.cpu = [ordered]@{
@@ -651,14 +677,7 @@ function New-WMDayRollup {
                 $utilBySeg += , $segUtil.ToArray()
             }
 
-            $runs = $null
-            foreach ($ser in $utilBySeg) {
-                $r = Get-WMLoadRuns -Series $ser -Threshold 75 -MinRun 3
-                if ($null -ne $r) {
-                    if ($null -eq $runs) { $runs = 0 }
-                    $runs += $r
-                }
-            }
+            $runs = Get-WMRunsFromSeries -SeriesList $utilBySeg -Threshold 75 -MinRun 3
 
             $entry = [ordered]@{
                 util         = Get-WMStats -Values $utilAll.ToArray() -Round 1
@@ -701,4 +720,4 @@ function New-WMDayRollup {
 Export-ModuleMember -Function `
     ConvertTo-WMNumber, Get-WMRound, Get-WMPercentile, Get-WMPercentileSorted, Get-WMStats,
     Test-WMBands, Get-WMLoadBand, Get-WMLoadRuns, Get-WMBandedStats,
-    Read-WMPatrolDay, Get-WMSampleSeries, Get-WMRunsBySegment, New-WMDayRollup
+    Read-WMPatrolDay, Get-WMSampleSeries, Get-WMRunsFromSeries, New-WMDayRollup

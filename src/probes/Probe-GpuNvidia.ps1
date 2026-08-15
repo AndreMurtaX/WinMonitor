@@ -59,13 +59,17 @@ function ConvertTo-Num {
         aparece como falha: aparece como 36 W virando 3645 W na série histórica.
     #>
     $n = 0.0
-    if ([double]::TryParse($t,
-                           [System.Globalization.NumberStyles]::Float,
-                           [System.Globalization.CultureInfo]::InvariantCulture,
-                           [ref]$n)) {
-        return $n
+    if (-not [double]::TryParse($t,
+                                [System.Globalization.NumberStyles]::Float,
+                                [System.Globalization.CultureInfo]::InvariantCulture,
+                                [ref]$n)) {
+        return $null
     }
-    return $null
+
+    # 'NaN' e 'Infinity' são aceitos por TryParse e não são medidas. Barrados
+    # aqui, na origem, para não entrarem na amostra gravada.
+    if ([double]::IsNaN($n) -or [double]::IsInfinity($n)) { return $null }
+    $n
 }
 
 function Invoke-Smi {
