@@ -116,6 +116,11 @@ function ConvertTo-WMConcretePath {
 
 $script:WM_OPERADORES = @('gt', 'gte', 'lt', 'lte')
 
+# Usada só quando a tabela não declara severityScale. A escala real vem do
+# arquivo: manter duas listas independentes que "coincidem por sorte" foi
+# exatamente como uma severidade desconhecida passou despercebida.
+$script:WM_ESCALA_PADRAO = @('normal', 'observar', 'agir', 'parar')
+
 function Test-WMOperator {
     param([Parameter(Mandatory)][string]$Operator, [double]$Left, [double]$Right)
     switch ($Operator) {
@@ -136,22 +141,59 @@ function Test-WMOperator {
     escrita errada.
 #>
 function Test-WMRuleWellFormed {
-    param($Rule)
+    param($Rule, [string[]]$Scale = $script:WM_ESCALA_PADRAO)
+
     if ([string]::IsNullOrWhiteSpace([string]$Rule.id))     { return @{ ok = $false; reason = 'regra sem id' } }
     if ([string]::IsNullOrWhiteSpace([string]$Rule.metric)) { return @{ ok = $false; reason = 'regra sem metric' } }
     if ($Rule.operator -notin $script:WM_OPERADORES) {
         return @{ ok = $false; reason = "operador desconhecido: '$($Rule.operator)' (esperado: $($script:WM_OPERADORES -join ', '))" }
     }
+
+    <#
+        O LIMIAR passa pelo mesmo crivo da métrica.
+
+        Antes, a métrica era lida por ConvertTo-WMNumber (cultura invariante,
+        NaN e Infinity recusados) e o limiar por cast cru. A assimetria era o
+        defeito: valor ilegível vindo da máquina virava lacuna declarada; valor
+        ilegível vindo do arquivo que o humano edita virava número errado ou
+        pane. Medido num Windows pt-BR, "9,3" no limiar virava 93 — dez vezes
+        errado, calado —, "NaN" fazia a regra nunca disparar e ainda contar como
+        avaliada, e "N/A" derrubava a avaliação inteira.
+    #>
     if ($Rule.kind -eq 'relative') {
         if ($null -eq $Rule.delta -and $null -eq $Rule.deltaPct) {
             return @{ ok = $false; reason = 'regra relativa sem delta nem deltaPct' }
         }
+        foreach ($campo in 'delta', 'deltaPct') {
+            $bruto = $Rule.$campo
+            if ($null -eq $bruto) { continue }
+            if ($null -eq (ConvertTo-WMNumber $bruto)) {
+                return @{ ok = $false; reason = "$campo não é um número utilizável: '$bruto'" }
+            }
+        }
     } elseif ($Rule.kind -eq 'absolute') {
         if ($null -eq $Rule.value) { return @{ ok = $false; reason = 'regra absoluta sem valor de limiar' } }
+        if ($null -eq (ConvertTo-WMNumber $Rule.value)) {
+            return @{ ok = $false; reason = "value não é um número utilizável: '$($Rule.value)'" }
+        }
     } else {
         return @{ ok = $false; reason = "kind desconhecido: '$($Rule.kind)' (esperado: absolute, relative)" }
     }
+
+    <#
+        Severidade tem de PERTENCER à escala, não apenas ser não-vazia.
+
+        Uma severidade desconhecida produzia achado com veredito 'normal' e
+        cobertura completa: a ordenação usa índice na escala, e chave ausente
+        devolve $null, que nunca é maior que nada. O achado entrava na lista e
+        as duas informações que deveriam se qualificar mutuamente concordavam em
+        dizer que estava tudo bem.
+    #>
     if ([string]::IsNullOrWhiteSpace([string]$Rule.severity)) { return @{ ok = $false; reason = 'regra sem severity' } }
+    if ($Rule.severity -cnotin $Scale) {
+        return @{ ok = $false; reason = "severity '$($Rule.severity)' fora da escala declarada ($($Scale -join ', '))" }
+    }
+
     @{ ok = $true; reason = $null }
 }
 
@@ -206,6 +248,17 @@ function Invoke-WMRules {
     $naoSeAplica  = [ordered]@{}
     $semLinhaBase = [ordered]@{}
 
+    <#
+        A escala vem do ARQUIVO, não de uma cópia embutida no código. Duas
+        listas independentes que coincidem por sorte foi como uma severidade
+        desconhecida atravessou o motor inteiro sem ser notada.
+    #>
+    # Where-Object obrigatório: @($null).Count é 1, não 0, então sem o filtro
+    # uma tabela sem severityScale produziria uma escala de um item nulo e o
+    # fallback nunca dispararia.
+    $escala = @($Rules.severityScale | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if ($escala.Count -eq 0) { $escala = $script:WM_ESCALA_PADRAO }
+
     $textoHardware = ''
     if ($Hardware) {
         $textoHardware = (@($Hardware.cpuName, $Hardware.os) + @($Hardware.disks | ForEach-Object { $_.name })) -join ' | '
@@ -226,7 +279,7 @@ function Invoke-WMRules {
             continue
         }
 
-        $forma = Test-WMRuleWellFormed -Rule $rule
+        $forma = Test-WMRuleWellFormed -Rule $rule -Scale $escala
         if (-not $forma.ok) {
             $malformadas[$rule.id] = $forma.reason
             continue
@@ -238,7 +291,13 @@ function Invoke-WMRules {
                 $naoSeAplica[$rule.id] = "regra restrita a '$($rule.appliesTo)' e não há descrição de hardware para conferir"
                 continue
             }
-            if ($textoHardware -notlike "*$($rule.appliesTo)*") {
+            <#
+                Comparação literal, não curinga. Com -like, um colchete ou uma
+                interrogação no nome do modelo mudaria o significado do filtro:
+                'RTX [39]080' casaria com 3080 E 9080, e 'GeForce?RTX' casaria
+                com qualquer caractere no lugar do espaço.
+            #>
+            if ($textoHardware.IndexOf([string]$rule.appliesTo, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
                 $naoSeAplica[$rule.id] = "regra restrita a '$($rule.appliesTo)'; esta máquina não corresponde"
                 continue
             }
@@ -268,24 +327,28 @@ function Invoke-WMRules {
                 }
                 $caminhoBase = ConvertTo-WMConcretePath -Template $rule.metric -Resolved $alvo.path
                 $base = @(Resolve-WMMetric -Root $Baseline.profile -Path $caminhoBase)
+
+                # Indexado pelo CAMINHO e não pela regra: com curinga, uma
+                # entrada por regra perderia qual GPU ficou sem referência —
+                # só a última mensagem sobreviveria.
                 if ($base.Count -eq 0) {
-                    $semLinhaBase[$rule.id] = "sem referência na linha-base para $caminhoBase"
+                    $semLinhaBase["$($rule.id)#$caminhoBase"] = "sem referência na linha-base para $caminhoBase"
                     continue
                 }
                 $refBase = ConvertTo-WMNumber $base[0].value
                 if ($null -eq $refBase) {
-                    $semLinhaBase[$rule.id] = "referência da linha-base sem medida em $caminhoBase"
+                    $semLinhaBase["$($rule.id)#$caminhoBase"] = "referência da linha-base sem medida em $caminhoBase"
                     continue
                 }
 
-                # A forma já foi validada: existe delta ou deltaPct.
+                # Forma já validada: existe delta ou deltaPct, e converte.
                 if ($null -ne $rule.deltaPct) {
-                    $limiar = $refBase * (1.0 + ([double]$rule.deltaPct / 100.0))
+                    $limiar = $refBase * (1.0 + ((ConvertTo-WMNumber $rule.deltaPct) / 100.0))
                 } else {
-                    $limiar = $refBase + [double]$rule.delta
+                    $limiar = $refBase + (ConvertTo-WMNumber $rule.delta)
                 }
             } else {
-                $limiar = [double]$rule.value
+                $limiar = ConvertTo-WMNumber $rule.value
             }
 
             $rodou = $true
@@ -316,9 +379,18 @@ function Invoke-WMRules {
         if ($rodou) { [void]$avaliadas.Add($rule.id) }
     }
 
-    # --- veredito ------------------------------------------------------------
-    $ordem = @{ 'normal' = 0; 'observar' = 1; 'agir' = 2; 'parar' = 3 }
-    $veredito = 'normal'
+    <#
+        Veredito pela posição na escala DECLARADA.
+
+        A forma da regra já garantiu que toda severidade que chega aqui
+        pertence à escala, então não há mais o caso de chave ausente devolver
+        $null e nunca ser maior que nada — que era como um achado grave
+        conviveu com veredito 'normal'.
+    #>
+    $ordem = @{}
+    for ($i = 0; $i -lt $escala.Count; $i++) { $ordem[$escala[$i]] = $i }
+
+    $veredito = $escala[0]
     foreach ($a in $achados) {
         if ($ordem[$a.severity] -gt $ordem[$veredito]) { $veredito = $a.severity }
     }

@@ -258,6 +258,147 @@ try {
     $specSemUrl = @($real.rules | Where-Object { $_.source.kind -eq 'spec' -and [string]::IsNullOrWhiteSpace([string]$_.source.url) })
     Assert-Equal 0 $specSemUrl.Count 'nenhuma regra spec sem url para conferir'
 
+    # =====================================================================
+    Start-TestGroup 'Severidade fora da escala não pode virar silêncio  [MUTAÇÃO]'
+
+    <#
+        Uma severidade desconhecida DISPARAVA o achado e deixava o veredito em
+        'normal' com cobertura completa: a ordenação usa índice na escala, e
+        chave ausente devolve $null, que nunca é maior que nada. O parecer leria
+        "veredito normal, cobertura completa" com um achado grave na lista.
+    #>
+    $molde = '{"severityScale":["normal","observar","agir","parar"],"rules":[' +
+             '{"id":"R-S","kind":"absolute","subsystem":"gpu","claim":"c",' +
+             '"metric":"gpu.0.tempCAllDay.max","operator":"gt","value":50,"severity":"%SEV%",' + $FONTE_OK + '}]}'
+
+    $ok = Invoke-WMRules -Rollup $ROLLUP -Rules (New-Rules ($molde -replace '%SEV%','parar')) -Hardware $HW
+    Assert-Equal 1 $ok.findings.Count 'severidade válida dispara'
+    Assert-Equal 'parar' $ok.verdict  'e levanta o veredito'
+
+    $fora = Invoke-WMRules -Rollup $ROLLUP -Rules (New-Rules ($molde -replace '%SEV%','critico')) -Hardware $HW
+    Assert-Equal 0 $fora.findings.Count 'severidade fora da escala NÃO produz achado'
+    Assert-True (-not $fora.coverage.complete) 'e a cobertura fica incompleta'
+    Assert-Equal 1 @(Get-WMNodeKeys $fora.coverage.malformed).Count 'a regra é malformada'
+    Assert-True ((Get-WMNodeChild $fora.coverage.malformed 'R-S') -match 'fora da escala') 'com o motivo nomeando a escala'
+
+    # Caixa importa: 'PARAR' não é 'parar'.
+    $caixa = Invoke-WMRules -Rollup $ROLLUP -Rules (New-Rules ($molde -replace '%SEV%','PARAR')) -Hardware $HW
+    Assert-Equal 0 $caixa.findings.Count 'severidade com caixa diferente também é recusada'
+    Assert-Equal 'normal' $caixa.verdict 'e não vaza para o veredito'
+
+    # A escala vem do ARQUIVO, não de uma cópia embutida.
+    $outraEscala = '{"severityScale":["calmo","urgente"],"rules":[' +
+                   '{"id":"R-E","kind":"absolute","subsystem":"gpu","claim":"c",' +
+                   '"metric":"gpu.0.tempCAllDay.max","operator":"gt","value":50,"severity":"urgente",' + $FONTE_OK + '}]}'
+    $re = Invoke-WMRules -Rollup $ROLLUP -Rules (New-Rules $outraEscala) -Hardware $HW
+    Assert-Equal 1 $re.findings.Count 'escala personalizada é respeitada'
+    Assert-Equal 'urgente' $re.verdict 'e o veredito sai na escala do arquivo'
+
+    # =====================================================================
+    Start-TestGroup 'O LIMIAR passa pelo mesmo crivo da métrica  [MUTAÇÃO]'
+
+    <#
+        A métrica era lida com cultura invariante e NaN recusado; o limiar
+        usava cast cru. Num Windows pt-BR, "9,3" no limiar virava 93 — dez
+        vezes errado e calado. thresholds.json é, por desenho, o arquivo que
+        humanos editam.
+    #>
+    $comLimiar = '{"rules":[{"id":"R-L","kind":"absolute","subsystem":"gpu","severity":"agir","claim":"c",' +
+                 '"metric":"gpu.0.tempCAllDay.max","operator":"gt","value":%V%,' + $FONTE_OK + '}]}'
+
+    $lNum = Invoke-WMRules -Rollup $ROLLUP -Rules (New-Rules ($comLimiar -replace '%V%','50')) -Hardware $HW
+    Assert-Equal 1 $lNum.findings.Count 'limiar numérico funciona (94 > 50)'
+
+    foreach ($lixo in '"9,3"', '"NaN"', '"Infinity"', '"N/A"', 'true') {
+        $r = $null
+        $erro = $null
+        try { $r = Invoke-WMRules -Rollup $ROLLUP -Rules (New-Rules ($comLimiar -replace '%V%', $lixo)) -Hardware $HW }
+        catch { $erro = $_.Exception.Message }
+        Assert-Null $erro "limiar $lixo não derruba a avaliação"
+        Assert-Equal 0 $r.findings.Count "limiar $lixo não produz achado"
+        Assert-Equal 1 @(Get-WMNodeKeys $r.coverage.malformed).Count "limiar $lixo é recusado como malformado"
+        Assert-True (-not $r.coverage.complete) "limiar $lixo deixa a cobertura incompleta"
+    }
+
+    # E o mesmo do lado do delta.
+    $comDelta = '{"rules":[{"id":"R-D","kind":"relative","subsystem":"cpu","severity":"agir","claim":"c",' +
+                '"metric":"cpu.mhzByLoad.b75.p50","operator":"lt","delta":%V%,' + $FONTE_OK + '}]}'
+    $dLixo = Invoke-WMRules -Rollup $ROLLUP -Rules (New-Rules ($comDelta -replace '%V%','"6,5"')) -Baseline $BASELINE -Hardware $HW
+    Assert-Equal 1 @(Get-WMNodeKeys $dLixo.coverage.malformed).Count 'delta com vírgula decimal é recusado'
+
+    # delta NEGATIVO: o sinal precisa ser respeitado, não absorvido.
+    $dNeg = Invoke-WMRules -Rollup $ROLLUP -Rules (New-Rules ($comDelta -replace '%V%','-300')) -Baseline $BASELINE -Hardware $HW
+    Assert-Equal 1 $dNeg.findings.Count 'delta negativo: 4200 está abaixo de 4900-300'
+    Assert-Equal 4600 $dNeg.findings[0].rule.threshold 'e o limiar é base menos 300, não base mais 300'
+
+    # =====================================================================
+    Start-TestGroup 'A métrica ilegível continua virando lacuna  [MUTAÇÃO]'
+
+    # Herança das defesas do armazém: documentada e, até aqui, sem teste.
+    foreach ($par in @(@('"NaN"', 'NaN'), @('"Infinity"', 'Infinity'), @('"9,3"', 'virgula'))) {
+        $rr = New-Data ('{"day":"d","host":"T","gpu":{"0":{"tempCAllDay":{"max":' + $par[0] + '}}}}')
+        $x = Invoke-WMRules -Rollup $rr -Rules (New-Rules ($comLimiar -replace '%V%','50')) -Hardware $HW
+        Assert-Equal 0 $x.findings.Count "métrica $($par[1]) não produz achado"
+        Assert-Equal 1 @(Get-WMNodeKeys $x.coverage.noData).Count "métrica $($par[1]) vira lacuna declarada"
+    }
+    $bom = New-Data '{"day":"d","host":"T","gpu":{"0":{"tempCAllDay":{"max":"93.5"}}}}'
+    $xb = Invoke-WMRules -Rollup $bom -Rules (New-Rules ($comLimiar -replace '%V%','50')) -Hardware $HW
+    Assert-Equal 1 $xb.findings.Count 'número em texto com ponto decimal é aceito'
+
+    # =====================================================================
+    Start-TestGroup 'Procedência é conferida ANTES da forma  [MUTAÇÃO]'
+
+    <#
+        A ordem existe porque regra pendente legitimamente ainda não tem limiar
+        preenchido. Invertida, R-CPU-TEMP-SPEC sairia de "aguardando citação"
+        para "erro de escrita" — o relatório acusaria a coisa errada.
+    #>
+    $pendenteEsemValor = New-Rules ('{"rules":[{"id":"R-P","kind":"absolute","subsystem":"cpu","severity":"agir","claim":"c",' +
+                                    '"metric":"cpu.util.p50","operator":"gt","value":null,' +
+                                    '"source":{"kind":"pending","text":"aguardando fonte primaria"}}]}')
+    $rp = Invoke-WMRules -Rollup $ROLLUP -Rules $pendenteEsemValor -Hardware $HW
+    Assert-Equal 1 @(Get-WMNodeKeys $rp.coverage.unsourced).Count 'regra pendente E sem limiar é reportada como SEM FONTE'
+    Assert-Equal 0 @(Get-WMNodeKeys $rp.coverage.malformed).Count 'e não como malformada'
+
+    # =====================================================================
+    Start-TestGroup 'Sem descrição de hardware, o desfecho é nomeado'
+
+    $so3080b = '{"rules":[{"id":"R-H","kind":"absolute","subsystem":"gpu","severity":"agir","claim":"c",' +
+               '"metric":"gpu.*.tempCAllDay.max","operator":"gte","value":93,"appliesTo":"GeForce RTX 3080",' + $FONTE_OK + '}]}'
+    $rsh = Invoke-WMRules -Rollup $ROLLUP -Rules (New-Rules $so3080b)
+    Assert-Equal 1 @(Get-WMNodeKeys $rsh.coverage.notApplicable).Count 'sem hardware conhecido cai em "não se aplica"'
+    Assert-Equal 0 @(Get-WMNodeKeys $rsh.coverage.noData).Count       'e não em "métrica ausente"'
+
+    # appliesTo compara literal: metacaractere não pode virar curinga.
+    $curingaHw = New-Data '{"gpus":["NVIDIA GeForce RTX 9080"]}'
+    # Colchete literal no JSON (não precisa de escape em JSON, e escapá-lo com
+    # contrabarra produz sequência inválida).
+    $rcw = Invoke-WMRules -Rollup $ROLLUP -Rules (New-Rules ($so3080b -replace 'GeForce RTX 3080','RTX [39]080')) -Hardware $curingaHw
+    Assert-Equal 0 $rcw.findings.Count 'colchete no modelo não vira classe de caracteres'
+
+    # =====================================================================
+    Start-TestGroup 'Os valores da tabela publicada'
+
+    <#
+        Guarda sobre o NÚMERO, não só sobre a estrutura: trocar o 93 por 200
+        passava verde, porque nenhum teste fixava valor nenhum.
+    #>
+    $r3080 = @($real.rules | Where-Object { $_.id -eq 'R-GPU-TEMP-SPEC-3080' })[0]
+    Assert-NotNull $r3080 'a regra da RTX 3080 existe'
+    Assert-Equal 93 $r3080.value 'o limiar é 93 C, o maximo de projeto publicado pela NVIDIA'
+    Assert-Equal 'gte' $r3080.operator 'com gte: atingir o limite ja conta'
+    Assert-True ($r3080.source.url -match 'nvidia\.com') 'e a url aponta para a NVIDIA'
+
+    $rdrift = @($real.rules | Where-Object { $_.id -eq 'R-GPU-TEMP-DRIFT' })[0]
+    Assert-Equal 6 $rdrift.delta 'a deriva termica dispara com 6 C acima da linha-base'
+
+    $rdisk = @($real.rules | Where-Object { $_.id -eq 'R-DISK-SPACE-LOW' })[0]
+    Assert-Equal 20 $rdisk.value 'o piso de espaco livre e 20 GB'
+
+    # A escala declarada no arquivo tem de conter toda severidade usada.
+    $foraEscala = @($real.rules | Where-Object { $_.severity -cnotin @($real.severityScale) })
+    Assert-Equal 0 $foraEscala.Count ('nenhuma regra usa severidade fora da escala: ' + (($foraEscala | ForEach-Object { $_.id }) -join ', '))
+
 } finally { }
 
 Show-TestSummary
