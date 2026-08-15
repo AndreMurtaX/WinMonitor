@@ -165,6 +165,43 @@ try {
     Assert-True ($out5.IndexOf('Achados medidos pelas regras') -lt $out5.IndexOf('Leitura do modelo')) 'o medido vem antes do escrito'
     Assert-True ($out5.IndexOf('Veredito') -lt $out5.IndexOf('Leitura do modelo')) 'e o veredito antes dos dois'
 
+    # =====================================================================
+    Start-TestGroup 'Driver: máquina saudável, sem linha fantasma  [MUTAÇÃO]'
+
+    <#
+        NENHUM TESTE LIA O PARECER RENDERIZADO até aqui — só a ordem das seções.
+        Foi por isso que a lacuna em branco sobreviveu a duas correções: o campo
+        ausente era aceito pelas guardas e o renderizador imprimia
+
+            Observações (hipóteses, NÃO verificadas):
+              -
+
+        um item vazio sob um título, que se lê como se houvesse uma hipótese que
+        ninguém soube escrever. O mesmo valia para um achado fantasma com
+        "o que fazer:" em branco.
+
+        Este cenário é o mais comum em produção: máquina sã, laudo curto, campos
+        opcionais simplesmente omitidos.
+    #>
+    $ACHADOS_VAZIO = '{"v":1,"window":"2026-08-15","host":"T","verdict":"normal","findings":[],"coverage":{"complete":true,"evaluated":["R-DISK-SPACE-LOW"],"unsourced":{},"malformed":{},"noData":{},"noBaseline":{},"notApplicable":{}}}'
+    $curto = '{"summary":"Nada mereceu atencao no periodo.","changedSinceLast":""}'
+
+    $p6 = New-Proj (New-DubleBody $curto)
+    [System.IO.File]::WriteAllText((Join-Path $p6 "data\findings\$dia.json"), $ACHADOS_VAZIO, $enc)
+    $out6 = & (Join-Path $p6 'src\Invoke-Laudo.ps1') -Day $dia 2>&1 | Out-String
+    $l6 = Read-Laudo $p6
+
+    Assert-True ($l6.rejected -eq $false) 'laudo de máquina saudável com campos ausentes é ACEITO'
+    Assert-True ($out6 -match 'Achados medidos pelas regras: nenhum') 'e a saída diz que não houve achado'
+
+    <#
+        A asserção que pega a linha fantasma: nenhuma linha da saída pode ser
+        um marcador de item seguido de nada.
+    #>
+    $fantasmas = @($out6 -split "`r?`n" | Where-Object { $_ -match '^\s*-\s*$' -or $_ -match '^\s*o que fazer:\s*$' })
+    Assert-Equal 0 $fantasmas.Count ('nenhuma linha fantasma na saída (achadas: ' + ($fantasmas -join ' | ') + ')')
+    Assert-True (-not ($out6 -match 'Observações')) 'e a seção de hipóteses nem aparece quando não há nenhuma'
+
 } finally {
     Clear-Dubles
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue

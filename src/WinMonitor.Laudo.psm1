@@ -479,10 +479,9 @@ function Test-WMLaudoNumbers {
                 [void]$literais.Add(([string]$k -split '#')[0])
             }
         }
-        foreach ($k in @($Package.coverage.evaluated)) {
-            [void]$literais.Add([string]$k)
-            [void]$literais.Add(([string]$k -split '#')[0])
-        }
+        # 'evaluated' guarda o id puro (WinMonitor.Rules.psm1) — só os baldes de
+        # lacuna geram chave com '#'. Separar aqui seria no-op com cara de defesa.
+        foreach ($k in @($Package.coverage.evaluated)) { [void]$literais.Add([string]$k) }
     }
     [void]$literais.Add([string]$Package.window)
     if ($Package.previous) { [void]$literais.Add([string]$Package.previous.window) }
@@ -775,6 +774,24 @@ function Test-WMLaudoFindings {
     $omitidos   = New-Object System.Collections.ArrayList
     $vistos     = @{}
     foreach ($a in @($Laudo.findings)) {
+        <#
+            Item NULO é campo ausente, não achado sem identificador.
+
+            @($null) rende UM elemento nulo, e sem esta linha um laudo que
+            simplesmente omitia a chave 'findings' era acusado de relatar
+            '(achado sem ruleId)'. Medido de ponta a ponta: pacote sem nenhum
+            achado, laudo dizendo "nada mereceu atenção no período" — REPROVADO
+            nas duas tentativas, com a guarda afirmando que ele relatou um
+            achado inventado.
+
+            É o caso mais comum que este sistema vai encontrar: máquina
+            saudável. E a reapresentação não tinha como ajudar, porque mandava o
+            modelo remover um achado que ele nunca escreveu.
+
+            Toda fixture do projeto trazia "findings":[] — presente e vazio,
+            nunca ausente. O teste cobria a forma que não quebrava.
+        #>
+        if ($null -eq $a) { continue }
         $id = [string]$a.ruleId
         if ([string]::IsNullOrWhiteSpace($id)) { [void]$inventados.Add('(achado sem ruleId)'); continue }
         if (-not $vistos.ContainsKey($id)) { $vistos[$id] = 0 }

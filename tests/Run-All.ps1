@@ -27,13 +27,13 @@
          existir e ser uma só. Duas linhas de resumo é vermelho: não dá para
          saber qual é a verdadeira.
       4. RESUMO CONFERIDO CONTRA AS LINHAS IMPRESSAS. TestKit imprime uma linha
-         por teste; o resumo tem de bater com a contagem delas. Suíte que
+         '   ok    nome' por teste que passa e uma '   FALHA nome' por teste que
+         falha (mais uma linha de detalhe, que NÃO casa o padrão por ter recuo
+         diferente). O resumo tem de bater com a contagem delas. Suíte que
          imprime o resumo sem rodar teste nenhum é pega aqui.
       5. VARREDURA DE DIRETÓRIO. Arquivo Test-*.ps1 que não está na lista é
          vermelho — senão apagar uma linha da lista some com uma suíte inteira.
-      6. PISO GLOBAL sobre o total, como rede para o que os pisos por suíte não
-         veem.
-      7. PRAZO, por suíte e no conjunto. Suíte que trava não pode segurar o
+      6. PRAZO, por suíte e no conjunto. Suíte que trava não pode segurar o
          portão para sempre, e a soma dos prazos não pode virar horas.
 
     O piso é atualizado À MÃO quando testes são acrescentados. Isso é de
@@ -57,17 +57,26 @@ param(
     #>
     [string]$SuiteDir,
     [string]$SuiteSpec,
-    [int]$SuiteTimeoutSec = 600
+    [int]$SuiteTimeoutSec = 600,
+    <#
+        O teto do conjunto é PARÂMETRO, não derivado do prazo por suíte.
+
+        Era [Math]::Max($SuiteTimeoutSec * 2, 900), e com o prazo curto que a
+        aferição usa isso dava sempre 900 s — o teto global era inatingível por
+        qualquer teste, em qualquer configuração. Trava que a costura de
+        verificação não consegue exercitar é trava que ninguém sabe se funciona.
+    #>
+    [int]$TotalTimeoutSec = 1800
 )
 
 $suites = @(
     @{ file = 'Test-Rollup.ps1';      min = 147 }
     @{ file = 'Test-Rules.ps1';       min = 135 }
-    @{ file = 'Test-Laudo.ps1';       min = 117 }
-    @{ file = 'Test-LaudoDriver.ps1'; min = 23  }
+    @{ file = 'Test-Laudo.ps1';       min = 121 }
+    @{ file = 'Test-LaudoDriver.ps1'; min = 27  }
     @{ file = 'Test-Report.ps1';      min = 60  }
-    @{ file = 'Test-Exam.ps1';        min = 33  }
-    @{ file = 'Test-Gate.ps1';        min = 27  }
+    @{ file = 'Test-Exam.ps1';        min = 37  }
+    @{ file = 'Test-Gate.ps1';        min = 34  }
     @{ file = 'Test-Drivers.ps1';     min = 56  }
 )
 
@@ -95,8 +104,16 @@ if ($SuiteSpec) {
             exit 2
         }
         $arq = $par[0].Trim()
+        if ([string]::IsNullOrWhiteSpace($arq)) {
+            Write-Error "SuiteSpec sem nome de arquivo em '$item'"
+            exit 2
+        }
         if ($arq -match '[\\/]' -or $arq -match '\.\.') {
             Write-Error "SuiteSpec com caminho em '$arq' — só nome de arquivo dentro do diretório de suítes"
+            exit 2
+        }
+        if ($piso -lt 0) {
+            Write-Error "SuiteSpec com piso negativo em '$item' — piso é contagem de testes"
             exit 2
         }
         [void]$lista.Add(@{ file = $arq; min = $piso })
@@ -139,11 +156,10 @@ foreach ($f in $naDisco) {
     que não ter portão numa integração contínua.
 #>
 $relogio = [System.Diagnostics.Stopwatch]::StartNew()
-$tetoGlobalSeg = [Math]::Max($SuiteTimeoutSec * 2, 900)
 
 foreach ($s in $suites) {
-    if ($relogio.Elapsed.TotalSeconds -gt $tetoGlobalSeg) {
-        [void]$falhas.Add("o portão passou de $tetoGlobalSeg s no total e parou antes de $($s.file)")
+    if ($relogio.Elapsed.TotalSeconds -gt $TotalTimeoutSec) {
+        [void]$falhas.Add("o portão passou de $TotalTimeoutSec s no total e parou antes de $($s.file)")
         break
     }
     $p = Join-Path $dir $s.file
@@ -181,9 +197,17 @@ foreach ($s in $suites) {
         Remove-Item -LiteralPath $tmpOut, ($tmpOut + '.err') -Force -ErrorAction SilentlyContinue
         continue
     }
+    <#
+        -Encoding UTF8 na leitura. Sem isso, todo diagnóstico acentuado da suíte
+        chegava corrompido ao portão — 'CONFERÊNCIA' virava 'CONFERÃŠNCIA' — e
+        quem lê o motivo da reprovação lia lixo. Não afeta as contagens, que são
+        ASCII; afeta exatamente a parte que existe para uma pessoa entender.
+        É a mesma armadilha de encoding que este projeto já combate com uma
+        ferramenta própria, agora na leitura em vez da escrita.
+    #>
     $codigo = $proc.ExitCode
-    $texto  = (Get-Content -LiteralPath $tmpOut -Raw -ErrorAction SilentlyContinue) + "`n" +
-              (Get-Content -LiteralPath ($tmpOut + '.err') -Raw -ErrorAction SilentlyContinue)
+    $texto  = (Get-Content -LiteralPath $tmpOut -Raw -Encoding UTF8 -ErrorAction SilentlyContinue) + "`n" +
+              (Get-Content -LiteralPath ($tmpOut + '.err') -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
     Remove-Item -LiteralPath $tmpOut, ($tmpOut + '.err') -Force -ErrorAction SilentlyContinue
 
     if ($Quiet) { ($texto -split "`n" | Select-Object -Last 6) -join "`n" } else { $texto }
@@ -219,13 +243,18 @@ foreach ($s in $suites) {
         Contar essas linhas e comparar com o resumo separa a suíte que trabalhou
         da que só disse ter trabalhado.
 
+        O padrão casa o FORMATO EXATO do TestKit — três espaços, 'ok', quatro
+        espaços — e não '\s+ok\s'. Com o padrão frouxo, qualquer linha do código
+        sob teste que começasse parecido inflava a contagem e o portão acusava a
+        suíte de mentir sobre si mesma. Vermelho por motivo nenhum é o que faz
+        alguém desligar o portão, e aí ele não guarda mais nada.
+
         Continua fora do alcance: teste que virou vácuo. Vinte 'Assert-True
         $true' imprimem vinte linhas legítimas e nenhuma contagem os distingue —
-        só leitura humana ou análise de mutação. ESSA limitação é real, e agora
-        é a única.
+        só leitura humana ou análise de mutação.
     #>
-    $linhasOk    = @([regex]::Matches($texto, '(?m)^\s+ok\s')).Count
-    $linhasFalha = @([regex]::Matches($texto, '(?m)^\s+FALHA\s')).Count
+    $linhasOk    = @([regex]::Matches($texto, '(?m)^   ok    ')).Count
+    $linhasFalha = @([regex]::Matches($texto, '(?m)^   FALHA ')).Count
 
     if ($linhasOk -ne $passou -or $linhasFalha -ne $falhou) {
         [void]$falhas.Add(
@@ -240,27 +269,30 @@ foreach ($s in $suites) {
 }
 
 <#
-    PISO GLOBAL, além do piso por suíte. É a rede que pega perda de teste em
-    qualquer lugar — inclusive nos casos que o piso por suíte não vê, porque a
-    suíte inteira deixou de ser executada.
+    O TOTAL ESPERADO É INFORMAÇÃO, NÃO TRAVA — e isso foi medido, não suposto.
 
-    SEM a condição '-not $SuiteDir' que havia aqui. Ela desligava o piso global
-    justamente no modo que Test-Gate.ps1 usa para aferir o portão — a costura
-    construída para testar a trava era a mesma coisa que a desligava, e a
-    mutação que a removia passava com dezesseis testes verdes. Não há motivo
-    para a exceção: o piso é somado DA LISTA recebida, então vale igual para
-    lista sintética.
+    Havia aqui um "piso global" anunciado como "a rede que pega perda de teste
+    em qualquer lugar". Ele não pegava nada que já não fosse pego: sendo
+    pisoTotal a soma dos pisos e totalOk a soma dos passou, a soma só fica
+    abaixo se alguma suíte ficou abaixo do próprio piso, ou não foi executada,
+    ou não existe — e TODOS esses caminhos já registram falha própria. Por
+    construção, ele nunca pode ser a causa única de uma reprovação.
+
+    Duas verificações seguidas mostraram a mutação que o removia passando com a
+    suíte inteira verde, e a segunda mostrou por quê. Manter uma trava que não
+    tem como disparar sozinha é pior que não ter: ela dá a impressão de cobrir
+    um caso que na verdade está coberto por outra coisa, e alguém confia nela.
+
+    O número continua sendo impresso, porque conferir o total de cabeça contra o
+    esperado é útil para quem lê. Ele só não finge ser defesa.
 #>
 # Soma à mão: Measure-Object -Property não enxerga CHAVE de hashtable, só
 # propriedade de objeto — e falha em vez de devolver zero.
-$pisoTotal = 0
-foreach ($s in $suites) { $pisoTotal += [int]$s.min }
-if ($totalOk -lt $pisoTotal) {
-    [void]$falhas.Add("total de $totalOk testes, abaixo do piso global de $pisoTotal")
-}
+$totalEsperado = 0
+foreach ($s in $suites) { $totalEsperado += [int]$s.min }
 
 ""
-"total de testes que passaram: $totalOk   (piso global: $pisoTotal)"
+"total de testes que passaram: $totalOk   (soma dos pisos: $totalEsperado)"
 if ($falhas.Count -eq 0) {
     "TODAS AS SUITES PASSARAM"
     exit 0

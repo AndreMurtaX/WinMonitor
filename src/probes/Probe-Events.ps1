@@ -47,7 +47,13 @@ param(
         para provar o comportamento de recusa contra um log REAL, em vez de
         contra um dublê que eu mesmo escreveria para concordar comigo.
     #>
-    [string]$LogName = 'System'
+    [string]$LogName = 'System',
+    <#
+        Teto de eventos por consulta. Costura de teste também: com -MaxEvents 1
+        contra um log que tem mais de um evento, dá para exercitar a declaração
+        de saturação sem esperar a máquina reiniciar duzentas vezes.
+    #>
+    [int]$MaxEvents = 200
 )
 
 if ($null -eq $Facts) { $Facts = Get-WMHostFacts }
@@ -138,7 +144,7 @@ function Test-LogReadable {
     português, e comparar texto localizado quebraria em qualquer outro idioma.
 #>
 function Measure-Event {
-    param([hashtable]$Filter, [int]$Max = 200)
+    param([hashtable]$Filter, [int]$Max = $MaxEvents)
 
     try {
         $ev = @(Get-WinEvent -FilterHashtable $Filter -MaxEvents $Max -ErrorAction Stop)
@@ -226,6 +232,7 @@ try {
     $kp = Measure-Event @{ LogName = $LogName; ProviderName = 'Microsoft-Windows-Kernel-Power'; Id = 41; StartTime = $Since }
     $data.kernelPower41 = $(if ($kp.ok) { [int]$kp.count } else { $null })
     if (-not $kp.ok) { [void]$avisos.Add("consulta Kernel-Power 41 falhou: $($kp.reason)") }
+    if ($kp.truncated) { $data.kernelPower41Truncated = $true; [void]$avisos.Add("Kernel-Power 41 atingiu o teto: PELO MENOS $($kp.count)") }
 
     <#
         Desligamento limpo (1074) entra como denominador. "Dois inesperados" diz
@@ -235,6 +242,14 @@ try {
     $limpo = Measure-Event @{ LogName = $LogName; Id = 1074; StartTime = $Since }
     $data.cleanShutdowns = $(if ($limpo.ok) { [int]$limpo.count } else { $null })
     if (-not $limpo.ok) { [void]$avisos.Add("consulta de desligamento limpo falhou: $($limpo.reason)") }
+    <#
+        O denominador tambem satura, e ele e o numero que da sentido ao
+        numerador: "dois inesperados em quarenta" e "dois em dois" sao situacoes
+        diferentes. A declaracao de saturacao estava escrita DENTRO da funcao
+        compartilhada, valendo so para dois dos quatro chamadores - o comentario
+        cobria o codigo todo e o efeito cobria metade.
+    #>
+    if ($limpo.truncated) { $data.cleanTruncated = $true; [void]$avisos.Add("a contagem de desligamento limpo atingiu o teto: PELO MENOS $($limpo.count)") }
 
     @{ ok = $true; reason = $(if ($avisos.Count -gt 0) { $avisos -join ' ;; ' } else { $null }); data = $data }
 

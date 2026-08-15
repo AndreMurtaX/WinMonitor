@@ -398,6 +398,33 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     $semId = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"","reading":"a","action":"b"}]}'
     Assert-True (-not (Test-WMLaudoFindings -Laudo $semId -Package $pac).ok) 'achado sem ruleId é rejeitado'
 
+    <#
+        MÁQUINA SAUDÁVEL, O CASO MAIS COMUM QUE ESTE SISTEMA VAI VER.
+
+        Pacote sem nenhum achado e laudo que simplesmente OMITE a chave
+        'findings' era REPROVADO, acusado de relatar '(achado sem ruleId)' —
+        porque @($null) rende um elemento nulo. Medido de ponta a ponta: as duas
+        tentativas reprovavam, e a reapresentação mandava o modelo remover um
+        achado que ele nunca escreveu.
+
+        Toda fixture do projeto trazia "findings":[]. O campo presente e vazio
+        nunca quebrou; o ausente quebrava, e nenhum teste o exercitava.
+    #>
+    $VAZIO2 = New-Data '{"v":1,"window":"2026-08-15","host":"T","verdict":"normal","findings":[],"coverage":{"complete":true,"evaluated":["R-DISK-SPACE-LOW"],"unsourced":{},"malformed":{},"noData":{},"noBaseline":{},"notApplicable":{}}}'
+    $pacSao = New-WMLaudoPackage -Findings $VAZIO2
+
+    foreach ($j in '{"summary":"Nada mereceu atencao no periodo."}',
+                   '{"summary":"x","findings":null}',
+                   '{"summary":"x","findings":null,"observations":null,"notVerified":null}') {
+        $l = New-Data $j
+        $fa = Test-WMLaudoFindings -Laudo $l -Package $pacSao
+        $sh = Test-WMLaudoShape    -Laudo $l -Package $pacSao
+        Assert-True ($fa.ok -and $sh.ok) ("laudo de máquina saudável com campos AUSENTES passa: $j (inventados: " + ($fa.invented -join ', ') + ')')
+    }
+
+    # E o achado genuinamente sem id continua sendo pego, com o pacote que o tem.
+    Assert-True (-not (Test-WMLaudoFindings -Laudo $semId -Package $pac).ok) 'e achado com ruleId em branco continua rejeitado'
+
     # =====================================================================
     Start-TestGroup 'CONFERÊNCIA: obrigações de forma  [MUTAÇÃO]'
 

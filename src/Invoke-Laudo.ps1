@@ -307,17 +307,34 @@ if ((Get-WMRealCount $laudo.notVerified) -eq 0) {
 "Leitura do modelo:"
 "  $($laudo.summary)"
 ""
-if (@($laudo.findings).Count -gt 0) {
+<#
+    Os TRÊS blocos desta saída usam Get-WMRealCount, não @(...).Count.
+
+    Eu consertei o de notVerified, escrevi um comentário longo explicando por
+    quê, e deixei os dois de baixo intactos — no mesmo arquivo, na mesma saída,
+    a poucas linhas de distância. Com o campo ausente, o parecer imprimia
+    "Observações (hipóteses, NÃO verificadas):" seguido de "  - " em branco, e
+    um achado fantasma com "o que fazer:" vazio.
+
+    É o padrão que cinco verificações seguidas apontaram, cometido dentro do
+    próprio commit que o descrevia: consertar o ponto exato e parar de olhar em
+    volta. Está escrito aqui para a próxima pessoa conferir os três juntos.
+#>
+if ((Get-WMRealCount $laudo.findings) -gt 0) {
     foreach ($a in @($laudo.findings)) {
+        if ($null -eq $a) { continue }
         "  - $($a.reading)"
         "    o que fazer: $($a.action)"
     }
     ""
 }
 if ($laudo.changedSinceLast) { "Desde o laudo anterior:"; "  $($laudo.changedSinceLast)"; "" }
-if (@($laudo.observations).Count -gt 0) {
+if ((Get-WMRealCount $laudo.observations) -gt 0) {
     "Observações (hipóteses, NÃO verificadas):"
-    foreach ($o in @($laudo.observations)) { "  - $o" }
+    foreach ($o in @($laudo.observations)) {
+        if ($null -eq $o -or ($o -is [string] -and [string]::IsNullOrWhiteSpace($o))) { continue }
+        "  - $o"
+    }
     ""
 }
 "modelo: $($laudo.providerModel)   tentativas: $($laudo.attempts)   gravado em: $destino"

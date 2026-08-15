@@ -62,6 +62,24 @@ try {
     Assert-True ($comSince.data.windowDays -le 3) 'com -Since, windowDays reflete a janela REAL, não o parâmetro ignorado'
     Assert-True ($comSince.data.cleanShutdowns -le $longo.data.cleanShutdowns) 'e a contagem é a dos dois dias'
 
+    <#
+        SATURAÇÃO DECLARADA, NOS QUATRO CONTADORES.
+
+        Com o teto atingido, a contagem vale exatamente o teto — e gravar isso
+        como número afirma "foram 200" quando o certo é "foram pelo menos 200".
+        A declaração estava escrita DENTRO da função compartilhada mas só era
+        usada por dois dos quatro chamadores: o comentário cobria tudo, o efeito
+        cobria metade. E o contador que ficava de fora era justamente o
+        denominador que dá sentido ao numerador.
+    #>
+    $satur = & $sonda -WindowDays 365 -MaxEvents 1
+    Assert-True ($satur.data.cleanTruncated -eq $true) 'saturação do desligamento limpo é declarada'
+    Assert-True ($satur.reason -match 'PELO MENOS') 'e a razão diz que é um piso, não uma contagem exata'
+    Assert-Equal 1 $satur.data.cleanShutdowns 'a contagem fica no teto, mas acompanhada da ressalva'
+
+    $semSat = & $sonda -WindowDays 365
+    Assert-True ($null -eq $semSat.data.cleanTruncated) 'sem saturar, nenhuma ressalva é inventada'
+
     # =====================================================================
     Start-TestGroup 'Sonda de eventos: o log ILEGÍVEL  [o teste que importa]'
 

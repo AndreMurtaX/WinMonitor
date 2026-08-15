@@ -54,7 +54,7 @@ function New-Cenario {
     o operador & derrubaria esta suíte junto.
 #>
 function Invoke-Portao {
-    param([string]$Dir, [hashtable[]]$Lista, [int]$TimeoutSec = 60)
+    param([string]$Dir, [hashtable[]]$Lista, [int]$TimeoutSec = 60, [int]$TotalSec = 1800)
 
     $spec = ($Lista | ForEach-Object { "$($_.file):$($_.min)" }) -join ','
 
@@ -65,7 +65,8 @@ function Invoke-Portao {
     #>
     $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $txt = & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $portao `
-                -SuiteDir $Dir -SuiteSpec $spec -SuiteTimeoutSec $TimeoutSec -Quiet 2>&1 | Out-String
+                -SuiteDir $Dir -SuiteSpec $spec -SuiteTimeoutSec $TimeoutSec `
+                -TotalTimeoutSec $TotalSec -Quiet 2>&1 | Out-String
     [pscustomobject]@{ text = $txt; aprovou = ($txt -match 'TODAS AS SUITES PASSARAM') }
 }
 
@@ -184,14 +185,19 @@ try {
     Assert-True (-not $r.aprovou) 'resumo que infla a contagem reprova'
 
     <#
-        5. PISO GLOBAL. Não tinha teste porque a própria costura de aferição
-        (-SuiteDir) desligava a trava. Agora o piso vale sempre, e é somado da
-        lista recebida — então funciona igual para lista sintética.
+        5. O TETO GLOBAL DE TEMPO. Ele era derivado do prazo por suíte —
+        Max(prazo*2, 900) — e com o prazo curto que esta aferição usa dava
+        sempre 900 s: a trava era inatingível por qualquer teste, em qualquer
+        configuração. Virou parâmetro próprio, e agora dá para exercitá-la.
+
+        Duas suítes que dormem 2 s cada, com teto de 1 s: a primeira roda, o
+        teto estoura, a segunda nem começa.
     #>
-    $d = New-Cenario @((Suite-Ok 'Test-A.ps1' 10), (Suite-Ok 'Test-B.ps1' 5))
-    $r = Invoke-Portao -Dir $d -Lista @(@{file='Test-A.ps1';min=8}, @{file='Test-B.ps1';min=8})
-    Assert-True (-not $r.aprovou) 'total abaixo do piso global reprova mesmo com cada suíte no seu piso'
-    Assert-True ($r.text -match 'piso global') 'e o motivo nomeia o piso global'
+    $lenta = { param($n) @{ file = $n; body = "Start-Sleep -Seconds 2`r`n'   ok    um'`r`n'  1 passou, 0 falhou'`r`nexit 0`r`n" } }
+    $d = New-Cenario @((& $lenta 'Test-A.ps1'), (& $lenta 'Test-B.ps1'))
+    $r = Invoke-Portao -Dir $d -Lista @(@{file='Test-A.ps1';min=1}, @{file='Test-B.ps1';min=1}) -TimeoutSec 30 -TotalSec 1
+    Assert-True (-not $r.aprovou) 'o conjunto que passa do teto global reprova'
+    Assert-True ($r.text -match 'no total e parou antes de') 'e o motivo diz que parou por tempo, dizendo onde'
 
     # =====================================================================
     Start-TestGroup 'Portão: a lista de suítes é validada  [MUTAÇÃO]'
@@ -217,11 +223,32 @@ try {
         } catch { [string]$_ }
     }
 
+    <#
+        A ASSERÇÃO CONFERE QUAL TRAVA DISPAROU, não só que reprovou.
+
+        Antes eram todas da forma 'não aprovou', e por isso cada trava era
+        satisfeita por uma vizinha: sabotar a validação de spec deixava a recusa
+        de lista vazia pegar no lugar, sabotar o confinamento de caminho deixava
+        o "arquivo não existe" pegar — e as três mutações sobreviviam com a
+        suíte verde. Teste que só confere o resultado não distingue a trava que
+        ele existe para defender.
+    #>
     $d = New-Cenario @((Suite-Ok 'Test-A.ps1' 10))
-    foreach ($spec in 'a:b', 'semdoispontos', 'Test-A.ps1:', ':10') {
-        $t = Invoke-Spec -Dir $d -Spec $spec
-        Assert-True (-not ($t -match 'TODAS AS SUITES PASSARAM')) "spec ilegível '$spec' não aprova nada"
+    foreach ($caso in @(
+        @{ spec = 'a:b';            motivo = 'ilegível' }
+        @{ spec = 'semdoispontos';  motivo = 'ilegível' }
+        @{ spec = 'Test-A.ps1:';    motivo = 'ilegível' }
+        @{ spec = ':10';            motivo = 'sem nome de arquivo' }
+        @{ spec = 'Test-A.ps1:-5';  motivo = 'piso negativo' }
+    )) {
+        $t = Invoke-Spec -Dir $d -Spec $caso.spec
+        Assert-True (-not ($t -match 'TODAS AS SUITES PASSARAM')) "spec inválida '$($caso.spec)' não aprova nada"
+        Assert-True ($t -match [regex]::Escape($caso.motivo)) "e a trava que pegou foi a certa: $($caso.motivo)"
     }
+
+    # Lista vazia tem de ter motivo PRÓPRIO, não ser pega pela validação de spec.
+    $t = Invoke-Spec -Dir $d -Spec ','
+    Assert-True ($t -match 'nenhuma suíte a executar') 'lista vazia reprova com motivo próprio'
 
     # Caminho na spec não pode fazer o portão executar arquivo de fora.
     $t = Invoke-Spec -Dir $d -Spec '..\Fora.ps1:1'
