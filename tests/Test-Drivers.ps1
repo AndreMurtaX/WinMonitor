@@ -409,6 +409,53 @@ try {
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $p11 'data\baseline\baseline.json'))) 'nenhuma GPU com referência ainda é recusa'
     Assert-True (Test-Saida $s11 'nenhuma GPU') 'e a recusa diz exatamente isso'
 
+    # =====================================================================
+    Start-TestGroup 'Invoke-Rules: o filtro de hardware recebe o que precisa'
+
+    <#
+        Este teste existe por causa de uma desconexão real: o motor de regras
+        filtra por modelo de GPU, e nada em produção populava o nome da placa.
+        Toda regra de fabricante caía em "não se aplica" — que tem cara de
+        resposta legítima e era, na verdade, o limiar nunca sendo conferido.
+
+        O que se testa aqui é a LIGAÇÃO entre host.json e o motor, que é onde a
+        falha morava. A lógica do filtro em si é testada em Test-Rules.ps1.
+    #>
+    $p13 = New-TempProject
+    # @(...) obrigatório: com um item só, o array desenrola para string e o
+    # índice [0] devolveria o primeiro CARACTERE da data.
+    $d1  = @(Get-DayIds -Count 1)[0]
+    Add-FixtureDay $p13 $d1 -Samples 200 -Bursts 2 -BurstLen 10 -Seed 99
+    & (Join-Path $p13 'src\Invoke-Rollup.ps1') | Out-Null
+
+    # host.json no formato que Get-WMHostFacts grava, com a placa do limiar.
+    $hostJson = '{"collectedAt":"2026-08-15T00:00:00.000-03:00","host":"FIXTURE-HOST",' +
+                '"os":"Windows 11 Pro","cpuName":"CPU de teste","cpuBaseMHz":3504,' +
+                '"gpuNames":["NVIDIA GeForce RTX 3080","Intel(R) UHD Graphics 750"]}'
+    [System.IO.File]::WriteAllText((Join-Path $p13 'data\host.json'), $hostJson, (New-Object System.Text.UTF8Encoding($false)))
+
+    & (Join-Path $p13 'src\Invoke-Rules.ps1') -Quiet | Out-Null
+    $ach = Read-Json (Join-Path $p13 "data\findings\$d1.json")
+
+    Assert-NotNull $ach 'os achados foram gravados'
+    $naoAplica = @($ach.coverage.notApplicable.PSObject.Properties.Name)
+    Assert-True (-not ($naoAplica -contains 'R-GPU-TEMP-SPEC-3080')) 'a regra da RTX 3080 NÃO cai em "hardware não confere" numa máquina que tem a placa'
+    Assert-True (@($ach.coverage.evaluated) -contains 'R-GPU-TEMP-SPEC-3080') 'ela consta como efetivamente avaliada'
+
+    # E numa máquina sem a placa, aí sim não se aplica.
+    $p14 = New-TempProject
+    Add-FixtureDay $p14 $d1 -Samples 200 -Bursts 2 -BurstLen 10 -Seed 99
+    & (Join-Path $p14 'src\Invoke-Rollup.ps1') | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $p14 'data\host.json'),
+        ($hostJson -replace 'NVIDIA GeForce RTX 3080', 'AMD Radeon RX 7900 XTX'),
+        (New-Object System.Text.UTF8Encoding($false)))
+
+    & (Join-Path $p14 'src\Invoke-Rules.ps1') -Quiet | Out-Null
+    $ach2 = Read-Json (Join-Path $p14 "data\findings\$d1.json")
+    $naoAplica2 = @($ach2.coverage.notApplicable.PSObject.Properties.Name)
+    Assert-True ($naoAplica2 -contains 'R-GPU-TEMP-SPEC-3080') 'noutra placa, a regra fica declarada como não aplicável'
+    Assert-True (-not $ach2.coverage.complete) 'e isso conta como lacuna de cobertura'
+
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

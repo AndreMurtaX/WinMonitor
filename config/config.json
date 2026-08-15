@@ -23,6 +23,7 @@
     "exam": "data\\exam",
     "rollup": "data\\rollup",
     "baseline": "data\\baseline",
+    "findings": "data\\findings",
     "logs": "logs"
   },
 

@@ -246,6 +246,27 @@ function Get-WMHostFacts {
         Write-WMLog -Level warn -Source 'facts' -Message "Win32_Processor: $($_.Exception.Message)"
     }
 
+    <#
+        Nomes de GPU. Via Win32_VideoController e não via nvidia-smi: pega
+        todas as placas, inclusive integradas e de outros fabricantes, sem
+        depender de ferramenta externa.
+
+        É o que o filtro appliesTo das regras usa para saber se um limiar de
+        fabricante vale nesta máquina. Sem isto, toda regra restrita a modelo
+        cai em "não se aplica" — que tem cara de resposta legítima e é, na
+        verdade, o limiar do fabricante nunca sendo conferido.
+    #>
+    try {
+        $facts.gpuNames = @(
+            Get-CimInstance Win32_VideoController -OperationTimeoutSec 10 -ErrorAction Stop |
+                Where-Object { $_.Name } |
+                ForEach-Object { $_.Name.Trim() } |
+                Sort-Object -Unique
+        )
+    } catch {
+        Write-WMLog -Level warn -Source 'facts' -Message "Win32_VideoController: $($_.Exception.Message)"
+    }
+
     try {
         $facts.disks = @(
             Get-PhysicalDisk -ErrorAction Stop | Sort-Object DeviceId | ForEach-Object {

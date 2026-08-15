@@ -17,12 +17,20 @@
       semFonte        a regra não tem procedência declarada. Recusada de
                       propósito: limiar sem origem é palpite com aparência de
                       dado, e é pior que limiar nenhum.
+      semLinhaBase    regra relativa sem referência congelada para comparar.
       naoSeAplica     o limiar é de um hardware que esta máquina não tem.
+      malformada      a regra em si está errada (sem limiar, operador
+                      desconhecido). Defeito de configuração, não da máquina —
+                      e por isso não pode se disfarçar de problema de fonte.
 
-    Só a primeira é uma afirmação sobre a saúde da máquina. As outras três são
+    Só a primeira é uma afirmação sobre a saúde da máquina. As outras são
     afirmações sobre o que NÃO foi possível afirmar, e vão para o bloco de
     cobertura para que o parecer não possa escrever "nenhum problema
     encontrado" quando a verdade é "não olhei".
+
+    DEPENDÊNCIA: usa ConvertTo-WMNumber de WinMonitor.Rollup.psm1, para que
+    número aqui seja lido com o mesmo critério do armazém — cultura invariante,
+    NaN e Infinity recusados. Quem importar este módulo precisa importar aquele.
 #>
 
 # ------------------------------------------------- navegação em objeto ------
@@ -106,6 +114,8 @@ function ConvertTo-WMConcretePath {
 
 # ------------------------------------------------------ comparação ----------
 
+$script:WM_OPERADORES = @('gt', 'gte', 'lt', 'lte')
+
 function Test-WMOperator {
     param([Parameter(Mandatory)][string]$Operator, [double]$Left, [double]$Right)
     switch ($Operator) {
@@ -115,6 +125,34 @@ function Test-WMOperator {
         'lte' { return $Left -le  $Right }
         default { throw "operador desconhecido: $Operator" }
     }
+}
+
+<#
+    Confere que a regra é utilizável ANTES de tentar avaliá-la.
+
+    Separado de Test-WMRuleSourced de propósito: regra malformada é defeito de
+    configuração, não ausência de procedência, e misturar as duas faria o
+    relatório dizer "sem fonte" sobre uma regra que tem fonte e está só
+    escrita errada.
+#>
+function Test-WMRuleWellFormed {
+    param($Rule)
+    if ([string]::IsNullOrWhiteSpace([string]$Rule.id))     { return @{ ok = $false; reason = 'regra sem id' } }
+    if ([string]::IsNullOrWhiteSpace([string]$Rule.metric)) { return @{ ok = $false; reason = 'regra sem metric' } }
+    if ($Rule.operator -notin $script:WM_OPERADORES) {
+        return @{ ok = $false; reason = "operador desconhecido: '$($Rule.operator)' (esperado: $($script:WM_OPERADORES -join ', '))" }
+    }
+    if ($Rule.kind -eq 'relative') {
+        if ($null -eq $Rule.delta -and $null -eq $Rule.deltaPct) {
+            return @{ ok = $false; reason = 'regra relativa sem delta nem deltaPct' }
+        }
+    } elseif ($Rule.kind -eq 'absolute') {
+        if ($null -eq $Rule.value) { return @{ ok = $false; reason = 'regra absoluta sem valor de limiar' } }
+    } else {
+        return @{ ok = $false; reason = "kind desconhecido: '$($Rule.kind)' (esperado: absolute, relative)" }
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$Rule.severity)) { return @{ ok = $false; reason = 'regra sem severity' } }
+    @{ ok = $true; reason = $null }
 }
 
 <#
@@ -163,6 +201,7 @@ function Invoke-WMRules {
     $achados = New-Object System.Collections.ArrayList
     $avaliadas    = New-Object System.Collections.ArrayList
     $semFonte     = [ordered]@{}
+    $malformadas  = [ordered]@{}
     $semDado      = [ordered]@{}
     $naoSeAplica  = [ordered]@{}
     $semLinhaBase = [ordered]@{}
@@ -175,10 +214,21 @@ function Invoke-WMRules {
 
     foreach ($rule in $Rules.rules) {
 
-        # --- procedência antes de qualquer coisa ----------------------------
+        <#
+            Procedência ANTES de forma. A ordem importa: uma regra pendente
+            legitimamente ainda não tem limiar preenchido, e checar a forma
+            primeiro a reportaria como malformada quando a verdade é que ela
+            está esperando alguém citar a fonte.
+        #>
         $fonte = Test-WMRuleSourced -Rule $rule
         if (-not $fonte.ok) {
             $semFonte[$rule.id] = $fonte.reason
+            continue
+        }
+
+        $forma = Test-WMRuleWellFormed -Rule $rule
+        if (-not $forma.ok) {
+            $malformadas[$rule.id] = $forma.reason
             continue
         }
 
@@ -228,19 +278,13 @@ function Invoke-WMRules {
                     continue
                 }
 
+                # A forma já foi validada: existe delta ou deltaPct.
                 if ($null -ne $rule.deltaPct) {
                     $limiar = $refBase * (1.0 + ([double]$rule.deltaPct / 100.0))
-                } elseif ($null -ne $rule.delta) {
-                    $limiar = $refBase + [double]$rule.delta
                 } else {
-                    $semFonte[$rule.id] = 'regra relativa sem delta nem deltaPct'
-                    break
+                    $limiar = $refBase + [double]$rule.delta
                 }
             } else {
-                if ($null -eq $rule.value) {
-                    $semFonte[$rule.id] = 'regra absoluta sem valor de limiar'
-                    break
-                }
                 $limiar = [double]$rule.value
             }
 
@@ -279,7 +323,7 @@ function Invoke-WMRules {
         if ($ordem[$a.severity] -gt $ordem[$veredito]) { $veredito = $a.severity }
     }
 
-    $lacunas = $semFonte.Count + $semDado.Count + $naoSeAplica.Count + $semLinhaBase.Count
+    $lacunas = $semFonte.Count + $malformadas.Count + $semDado.Count + $naoSeAplica.Count + $semLinhaBase.Count
 
     [pscustomobject][ordered]@{
         v        = 1
@@ -297,6 +341,7 @@ function Invoke-WMRules {
             complete        = ($lacunas -eq 0)
             evaluated       = @($avaliadas)
             unsourced       = $semFonte
+            malformed       = $malformadas
             noData          = $semDado
             noBaseline      = $semLinhaBase
             notApplicable   = $naoSeAplica
@@ -306,4 +351,4 @@ function Invoke-WMRules {
 
 Export-ModuleMember -Function `
     Get-WMNodeKeys, Get-WMNodeChild, Resolve-WMMetric, ConvertTo-WMConcretePath,
-    Test-WMOperator, Test-WMRuleSourced, Invoke-WMRules
+    Test-WMOperator, Test-WMRuleSourced, Test-WMRuleWellFormed, Invoke-WMRules
