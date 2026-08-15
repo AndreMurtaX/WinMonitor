@@ -108,10 +108,41 @@ try {
     Assert-True (($ex.coverage['smart'] -match 'eleva') -or ($ex.coverage.smart -match 'eleva')) 'e a lacuna do SMART diz que falta elevação'
 
     <#
-        O exame nunca inventa o bloco de uma sonda que não rodou. Um {} vazio
-        seria lido por qualquer regra seguinte como "rodou e não achou nada".
+        O exame nunca inventa o bloco de uma sonda que FALHOU. Um {} vazio seria
+        lido por qualquer regra seguinte como "rodou e não achou nada".
+
+        A asserção anterior aqui era VAZIA: conferia $ex.smart, e 'smart' está em
+        exam.missing, não em exam.probes — a chave nunca chega a ser escrita, e
+        o teste passava com qualquer implementação. Medido pelo verificador:
+        trocar as três atribuições $null por @{} em Invoke-Exam não deixava a
+        suíte vermelha.
+
+        Agora o teste planta uma sonda que falha DE VERDADE e confere o que sai.
     #>
-    Assert-True ($null -eq $ex.smart) 'a sonda que não existe não deixa objeto vazio no lugar'
+    $sondaRuim = Join-Path $root 'src\probes\Probe-TesteQueFalha.ps1'
+    $cfgP      = Join-Path $root 'config\config.json'
+    $cfgOrig   = [System.IO.File]::ReadAllText($cfgP)
+    try {
+        [System.IO.File]::WriteAllText($sondaRuim,
+            "param(`$Facts, `$TimeoutSec, `$WindowDays)`r`n@{ ok = `$false; reason = 'falha proposital' }`r`n",
+            (New-Object System.Text.UTF8Encoding($true)))
+
+        $c = $cfgOrig | ConvertFrom-Json
+        $c.exam.probes = @([pscustomobject]@{ name = 'TesteQueFalha'; key = 'ruim' })
+        [System.IO.File]::WriteAllText($cfgP, (ConvertTo-Json -InputObject $c -Depth 14), (New-Object System.Text.UTF8Encoding($false)))
+
+        $ex2 = & (Join-Path $root 'src\Invoke-Exam.ps1') -PassThru -NoWrite
+        $cob2 = if ($ex2.coverage -is [System.Collections.IDictionary]) { $ex2.coverage } else { $ex2.coverage.PSObject.Properties }
+
+        Assert-True ($null -eq $ex2.ruim) 'sonda que falhou deixa NULO, não objeto vazio'
+        Assert-True ((@($ex2.PSObject.Properties.Name) -contains 'ruim')) 'mas a chave existe, para a ausência ser visível'
+        $motivo = if ($ex2.coverage -is [System.Collections.IDictionary]) { $ex2.coverage['ruim'] } else { $ex2.coverage.ruim }
+        Assert-True ($motivo -match 'falha proposital') 'e o motivo da falha fica na cobertura'
+        Assert-True ($ex2.complete -eq $false) 'e o exame se declara incompleto'
+    } finally {
+        [System.IO.File]::WriteAllText($cfgP, $cfgOrig, (New-Object System.Text.UTF8Encoding($true)))
+        Remove-Item -LiteralPath $sondaRuim -Force -ErrorAction SilentlyContinue
+    }
 
 } finally { }
 
