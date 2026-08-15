@@ -792,7 +792,32 @@ function Test-WMLaudoFindings {
             nunca ausente. O teste cobria a forma que não quebrava.
         #>
         if ($null -eq $a) { continue }
+
+        <#
+            ACHADO PRECISA TER LEITURA E AÇÃO, não só identificador.
+
+            Um achado trazendo apenas ruleId passava nas quatro guardas e era
+            renderizado como duas linhas em branco:
+
+                  -
+                    o que fazer:
+
+            Byte a byte, o mesmo artefato que eu declarei eliminado no commit
+            anterior — o esquema exige os três campos, mas nada conferia que
+            vinham preenchidos, e um modelo que devolve string vazia satisfaz o
+            esquema. Relatar um achado sem dizer o que foi lido nem o que fazer
+            não é relatar; é ocupar a linha.
+        #>
         $id = [string]$a.ruleId
+        if (-not [string]::IsNullOrWhiteSpace($id)) {
+            $faltantes = @()
+            if ([string]::IsNullOrWhiteSpace([string]$a.reading)) { $faltantes += 'reading' }
+            if ([string]::IsNullOrWhiteSpace([string]$a.action))  { $faltantes += 'action' }
+            if ($faltantes.Count -gt 0) {
+                [void]$inventados.Add("$id (sem $($faltantes -join ' e '))")
+                continue
+            }
+        }
         if ([string]::IsNullOrWhiteSpace($id)) { [void]$inventados.Add('(achado sem ruleId)'); continue }
         if (-not $vistos.ContainsKey($id)) { $vistos[$id] = 0 }
         $vistos[$id]++

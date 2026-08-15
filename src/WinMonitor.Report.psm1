@@ -34,9 +34,18 @@ Set-StrictMode -Off
 <#
     A ronda rodou mesmo?
 
-    Compara as amostras que existem contra as que deveriam existir, dado o
-    intervalo configurado. Devolve o atraso da amostra mais recente, que é o
-    número que responde "este dado é de agora ou de anteontem?".
+    O QUE DECIDE é o atraso da amostra mais recente: o número que responde
+    "este dado é de agora ou de anteontem?". A cobertura do dia — amostras que
+    existem contra as que deveriam existir — é CALCULADA E DECLARADA, e
+    deliberadamente não decide sozinha: um dia com poucas amostras pode ser um
+    dia em que a máquina passou desligada, e chamar isso de coleta doente seria
+    alarme falso diário.
+
+    O comentário anterior dizia que a função "compara as amostras que existem
+    contra as que deveriam existir", como se a comparação valesse alguma coisa
+    na decisão. Ela não valia: era calculada e descartada. Agora está dito o que
+    ela é — informação para quem lê o relatório — e ela aparece na razão quando
+    é gritante o bastante para importar.
 
     -NowUtc entra por parâmetro em vez de sair de Get-Date porque isto precisa
     ser testável sem esperar o relógio.
@@ -115,6 +124,30 @@ function Get-WMCollectionHealth {
         $saude.lastDayCoverage = [Math]::Round(100.0 * $linhas.Count / $saude.expectedPerDay, 1)
     }
 
+    <#
+        AMOSTRA NO FUTURO TAMBÉM É COLETA DOENTE.
+
+        A conferência era só '$atraso -gt limite', e atraso NEGATIVO passava
+        direto. Medido: ronda parada há três dias mais um arquivo com carimbo
+        120 dias à frente devolvia ok=True, minutesSinceLast=-172800 e razão
+        vazia — coleta declarada saudável sobre um dado que ainda não aconteceu.
+
+        Não é hipótese: relógio corrigido para trás por NTP, retomada de
+        suspensão e restauração de instantâneo de máquina virtual produzem isso.
+        E agrava, porque o dia mais recente é escolhido por NOME: um único
+        arquivo mal datado fica sendo "o último dia" até a retenção o apagar,
+        noventa dias depois.
+
+        Uma tolerância pequena absorve a diferença normal de relógio entre a
+        escrita e a leitura; além dela, o certo é dizer que não dá para confiar
+        no carimbo — que é diferente de dizer que está tudo bem.
+    #>
+    if ($atraso -lt -5) {
+        $saude.reason = ("a amostra mais recente está {0} min NO FUTURO. " -f [Math]::Abs($atraso)) +
+                        'O relógio da máquina ou o carimbo da coleta está errado, e nenhum veredito de tempo é confiável enquanto isso durar.'
+        return [pscustomobject]$saude
+    }
+
     if ($atraso -gt $StaleAfterMinutes) {
         $saude.reason = ("a ronda não produz amostra há {0} min (limite: {1} min). " -f $atraso, $StaleAfterMinutes) +
                         'Qualquer veredito abaixo foi calculado sobre dado velho.'
@@ -122,6 +155,17 @@ function Get-WMCollectionHealth {
     }
 
     $saude.ok = $true
+    <#
+        Coleta recente mas rala: a ronda está viva e passou a maior parte do dia
+        sem produzir. Não reprova — máquina desligada é motivo legítimo — mas
+        entra na razão, porque um percentil calculado sobre 1% das amostras do
+        dia não é o mesmo número que um calculado sobre todas.
+    #>
+    if ($null -ne $saude.lastDayCoverage -and $saude.lastDayCoverage -lt 25) {
+        $saude.reason = ("a ronda está viva, mas o dia tem {0}% das amostras esperadas ({1} de {2}). " -f
+                            $saude.lastDayCoverage, $linhas.Count, $saude.expectedPerDay) +
+                        'As estatísticas do dia repousam sobre menos dado do que o normal.'
+    }
     [pscustomobject]$saude
 }
 

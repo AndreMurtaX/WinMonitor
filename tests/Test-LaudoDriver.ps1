@@ -74,6 +74,42 @@ function New-DubleBody {
     "@{ ok = `$true; text = @'`r`n$Json`r`n'@; model = 'duble' }`r`n"
 }
 
+<#
+    NENHUMA SAÍDA DO DRIVER PODE TER LINHA FANTASMA — em cenário nenhum.
+
+    A verificação anterior nomeou o padrão: eu escrevia a asserção nova e a
+    aplicava a UM cenário, não à família. A linha fantasma foi declarada
+    eliminada duas vezes e reapareceu duas vezes por um campo diferente, porque
+    só um caso a conferia.
+
+    Esta função é chamada em TODOS os cenários deste arquivo. Item sem texto,
+    'o que fazer:' vazio e título de seção seguido de nada são todos artefato de
+    campo ausente que o renderizador não soube pular.
+#>
+function Assert-SemFantasma {
+    param([string]$Saida, [string]$Cenario)
+    $linhas = @($Saida -split "`r?`n")
+    $ruins = New-Object System.Collections.ArrayList
+    for ($i = 0; $i -lt $linhas.Count; $i++) {
+        $l = $linhas[$i]
+        if ($l -match '^\s*-\s*$' -or $l -match '^\s*o que fazer:\s*$' -or $l -match '^\s*-\s*:\s*$') {
+            [void]$ruins.Add("linha $($i+1): '$l'")
+        }
+        <#
+            Título de seção seguido de linha vazia é seção sem conteúdo — e
+            título é a linha que TERMINA em dois-pontos. "Achados medidos pelas
+            regras: nenhum." não é título: é a frase inteira, e exigir conteúdo
+            embaixo dela seria a asserção reprovando a saída correta.
+        #>
+        if ($l -match '^(Não verificado|Achados|Observações).*:\s*$' -and $i + 1 -lt $linhas.Count) {
+            if ([string]::IsNullOrWhiteSpace($linhas[$i + 1])) {
+                [void]$ruins.Add("seção '$l' sem nada embaixo")
+            }
+        }
+    }
+    Assert-Equal 0 $ruins.Count ("[$Cenario] nenhuma linha fantasma na saída (achadas: " + ($ruins -join ' | ') + ')')
+}
+
 function Clear-Dubles { Get-ChildItem $env:TEMP -Filter 'wmdub.*.json' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
 function Get-Dubles   { @(Get-ChildItem $env:TEMP -Filter 'wmdub.*.json' -ErrorAction SilentlyContinue | Sort-Object Name) }
 
@@ -198,9 +234,42 @@ try {
         A asserção que pega a linha fantasma: nenhuma linha da saída pode ser
         um marcador de item seguido de nada.
     #>
-    $fantasmas = @($out6 -split "`r?`n" | Where-Object { $_ -match '^\s*-\s*$' -or $_ -match '^\s*o que fazer:\s*$' })
-    Assert-Equal 0 $fantasmas.Count ('nenhuma linha fantasma na saída (achadas: ' + ($fantasmas -join ' | ') + ')')
+    Assert-SemFantasma -Saida $out6 -Cenario 'máquina saudável'
     Assert-True (-not ($out6 -match 'Observações')) 'e a seção de hipóteses nem aparece quando não há nenhuma'
+
+    # A MESMA conferência nos outros cenários que produzem parecer apresentado.
+    Assert-SemFantasma -Saida $out5 -Cenario 'laudo honesto com achado'
+
+    <#
+        E O CAMPO QUE REABRIU A FALHA NA SEXTA VERIFICAÇÃO: achado trazendo só
+        ruleId, sem reading nem action. Passava nas quatro guardas e era
+        renderizado como duas linhas em branco — byte a byte o artefato que eu
+        havia declarado eliminado. O esquema exige os três campos; nada conferia
+        que vinham preenchidos, e string vazia satisfaz o esquema.
+    #>
+    Clear-Dubles
+    $soId = '{"summary":"O volume esta com pouco espaco.","findings":[{"ruleId":"R-DISK-SPACE-LOW"}],"notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[]}'
+    $p7 = New-Proj ($cab + (New-DubleBody $soId))
+    $out7 = & (Join-Path $p7 'src\Invoke-Laudo.ps1') -Day $dia 2>&1 | Out-String
+    $l7 = Read-Laudo $p7
+
+    Assert-True ($l7.rejected -eq $true) 'achado só com ruleId, sem leitura nem ação, é REPROVADO'
+    Assert-True ($out7 -match 'sem reading') 'e o motivo diz o que faltou'
+    Assert-SemFantasma -Saida $out7 -Cenario 'achado só com ruleId'
+
+    <#
+        Array MISTO: um item nulo ao lado de um válido. As guardas aceitam — o
+        item nulo é campo ausente, não achado anônimo — e o renderizador tem de
+        pular o nulo sem deixar buraco. Nenhum teste exercitava essa forma.
+    #>
+    Clear-Dubles
+    $misto = '{"summary":"O volume esta com pouco espaco.","findings":[null,{"ruleId":"R-DISK-SPACE-LOW","reading":"o volume ficou com 3 GB livres","action":"liberar espaco"}],"notVerified":[null,{"ruleId":"R-CPU-TEMP-SPEC","note":"sem fonte"}],"changedSinceLast":"","observations":[null]}'
+    $p8 = New-Proj ($cab + (New-DubleBody $misto))
+    $out8 = & (Join-Path $p8 'src\Invoke-Laudo.ps1') -Day $dia 2>&1 | Out-String
+    $l8 = Read-Laudo $p8
+
+    Assert-True ($l8.rejected -eq $false) 'array com item nulo ao lado de item válido é aceito'
+    Assert-SemFantasma -Saida $out8 -Cenario 'array misto com nulo'
 
 } finally {
     Clear-Dubles

@@ -250,9 +250,25 @@ try {
     $t = Invoke-Spec -Dir $d -Spec ','
     Assert-True ($t -match 'nenhuma suíte a executar') 'lista vazia reprova com motivo próprio'
 
-    # Caminho na spec não pode fazer o portão executar arquivo de fora.
+    <#
+        CONFINAMENTO DE CAMINHO — a única trava de segurança do conjunto, e a
+        única que continuava na forma antiga.
+
+        Medido: removendo a validação de caminho, o "arquivo não existe"
+        satisfazia a asserção 'não aprovou' e a mutação sobrevivia. Ou seja, a
+        trava que impede o portão de executar arquivo de fora do diretório de
+        suítes estava sendo conferida por acidente, por uma vizinha.
+
+        O teste planta o arquivo de fora DE VERDADE — senão "não existe" e "não
+        pode" continuam indistinguíveis.
+    #>
+    $fora = Join-Path $tmp 'Fora.ps1'
+    [System.IO.File]::WriteAllText($fora, "'   ok    executei de fora'`r`n'  1 passou, 0 falhou'`r`nexit 0`r`n", $enc)
+
     $t = Invoke-Spec -Dir $d -Spec '..\Fora.ps1:1'
     Assert-True (-not ($t -match 'TODAS AS SUITES PASSARAM')) 'spec com caminho é recusada'
+    Assert-True ($t -match 'caminho') 'e a trava que pegou foi a de caminho, não a de arquivo ausente'
+    Assert-True (-not ($t -match 'executei de fora')) 'o arquivo de fora NÃO chegou a ser executado'
 
     # =====================================================================
     Start-TestGroup 'Portão: arquivo que sumiu'

@@ -73,12 +73,47 @@ try {
         denominador que dá sentido ao numerador.
     #>
     $satur = & $sonda -WindowDays 365 -MaxEvents 1
-    Assert-True ($satur.data.cleanTruncated -eq $true) 'saturação do desligamento limpo é declarada'
+
+    <#
+        OS QUATRO CONTADORES, um a um.
+
+        A versão anterior deste grupo se chamava "nos QUATRO contadores" e
+        assertava sobre UM. Medido pela verificação: três dos quatro mutantes
+        sobreviviam — a declaração existia no código e não no teste, que é a
+        forma mais cara de trava porque parece pronta.
+
+        Cada contador precisa da sua asserção, e cada uma declara a condição de
+        que depende: só há saturação se houver evento daquele tipo na máquina.
+    #>
+    foreach ($par in @(
+        @{ campo = 'cleanTruncated';         conta = 'cleanShutdowns';      nome = 'desligamento limpo' }
+        @{ campo = 'unexpectedTruncated';    conta = 'unexpectedShutdowns'; nome = 'desligamento inesperado' }
+        @{ campo = 'kernelPower41Truncated'; conta = 'kernelPower41';       nome = 'Kernel-Power 41' }
+    )) {
+        $temEvento = ([int]$satur.data.($par.conta) -ge 1)
+        if ($temEvento) {
+            Assert-True ($satur.data.($par.campo) -eq $true) "saturação de $($par.nome) é declarada"
+        } else {
+            Add-TestResult -Ok $true -Name "$($par.nome): esta máquina não tem evento do tipo, condição declarada" -Detail ''
+        }
+    }
     Assert-True ($satur.reason -match 'PELO MENOS') 'e a razão diz que é um piso, não uma contagem exata'
-    Assert-Equal 1 $satur.data.cleanShutdowns 'a contagem fica no teto, mas acompanhada da ressalva'
+
+    <#
+        WHEA é o quarto, e nesta máquina ele é ZERO — não dá para saturá-lo com
+        dado real. O teste declara isso em vez de fingir que verificou: um
+        'ok' silencioso aqui seria a mesma ausência-virando-zero que a sonda
+        inteira existe para impedir.
+    #>
+    if ([int]$satur.data.wheaErrors -ge 1) {
+        Assert-True ($satur.data.wheaTruncated -eq $true) 'saturação de WHEA é declarada'
+    } else {
+        Add-TestResult -Ok $true -Name 'WHEA: zero erros nesta máquina, saturação NÃO verificável aqui — declarado' -Detail ''
+    }
 
     $semSat = & $sonda -WindowDays 365
     Assert-True ($null -eq $semSat.data.cleanTruncated) 'sem saturar, nenhuma ressalva é inventada'
+    Assert-True ($null -eq $semSat.data.unexpectedTruncated) 'nem para desligamento inesperado'
 
     # =====================================================================
     Start-TestGroup 'Sonda de eventos: o log ILEGÍVEL  [o teste que importa]'

@@ -73,10 +73,10 @@ $suites = @(
     @{ file = 'Test-Rollup.ps1';      min = 147 }
     @{ file = 'Test-Rules.ps1';       min = 135 }
     @{ file = 'Test-Laudo.ps1';       min = 121 }
-    @{ file = 'Test-LaudoDriver.ps1'; min = 27  }
-    @{ file = 'Test-Report.ps1';      min = 60  }
-    @{ file = 'Test-Exam.ps1';        min = 37  }
-    @{ file = 'Test-Gate.ps1';        min = 34  }
+    @{ file = 'Test-LaudoDriver.ps1'; min = 33  }
+    @{ file = 'Test-Report.ps1';      min = 67  }
+    @{ file = 'Test-Exam.ps1';        min = 40  }
+    @{ file = 'Test-Gate.ps1';        min = 36  }
     @{ file = 'Test-Drivers.ps1';     min = 56  }
 )
 
@@ -198,16 +198,29 @@ foreach ($s in $suites) {
         continue
     }
     <#
-        -Encoding UTF8 na leitura. Sem isso, todo diagnóstico acentuado da suíte
-        chegava corrompido ao portão — 'CONFERÊNCIA' virava 'CONFERÃŠNCIA' — e
-        quem lê o motivo da reprovação lia lixo. Não afeta as contagens, que são
-        ASCII; afeta exatamente a parte que existe para uma pessoa entender.
-        É a mesma armadilha de encoding que este projeto já combate com uma
-        ferramenta própria, agora na leitura em vez da escrita.
+        -Encoding OEM, e a escolha foi MEDIDA byte a byte.
+
+        Quem escreve este arquivo é a redireção de console do powershell.exe
+        filho, que usa a página de código do console — cp850 nesta máquina — e
+        NÃO o projeto. A doutrina de UTF-8 daqui vale para os arquivos que o
+        projeto grava; aplicá-la aqui foi erro meu, e um erro que piorou o que
+        pretendia consertar:
+
+            bytes no arquivo (cp850) : 210,135,198,130
+            lido como UTF8           : 1159,386          dois chars, irreversível
+            lido como Default        : 210,8225,198,8218 lixo, mas reversível
+            lido como OEM            : 202,231,227,233   CORRETO
+
+        Ou seja, a "correção" fundia dois bytes num caractere e destruía
+        informação que a leitura anterior preservava. Só funcionaria com o
+        console em cp65001, o oposto do padrão em pt-BR.
+
+        Não afeta contagem, que é ASCII; afeta exatamente a parte que existe
+        para uma pessoa entender por que reprovou.
     #>
     $codigo = $proc.ExitCode
-    $texto  = (Get-Content -LiteralPath $tmpOut -Raw -Encoding UTF8 -ErrorAction SilentlyContinue) + "`n" +
-              (Get-Content -LiteralPath ($tmpOut + '.err') -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
+    $texto  = (Get-Content -LiteralPath $tmpOut -Raw -Encoding OEM -ErrorAction SilentlyContinue) + "`n" +
+              (Get-Content -LiteralPath ($tmpOut + '.err') -Raw -Encoding OEM -ErrorAction SilentlyContinue)
     Remove-Item -LiteralPath $tmpOut, ($tmpOut + '.err') -Force -ErrorAction SilentlyContinue
 
     if ($Quiet) { ($texto -split "`n" | Select-Object -Last 6) -join "`n" } else { $texto }

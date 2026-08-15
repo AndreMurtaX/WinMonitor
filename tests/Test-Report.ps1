@@ -83,6 +83,39 @@ try {
     $h = Get-WMCollectionHealth -PatrolDir (New-PatrolDir 'lixo' $lixo) -NowUtc $AGORA
     Assert-True (-not $h.ok) 'arquivo sem nenhuma amostra legível não é saudável'
 
+    <#
+        AMOSTRA NO FUTURO.
+
+        A conferência era só 'atraso > limite', e atraso NEGATIVO passava. Medido
+        pela verificação adversarial: ronda parada há três dias mais um arquivo
+        com carimbo à frente devolvia ok=True, atraso de -172800 min e razão
+        vazia — coleta declarada saudável sobre dado que ainda não aconteceu.
+
+        Relógio corrigido para trás por NTP, retomada de suspensão e restauração
+        de instantâneo de VM produzem exatamente isso. Os testes existentes só
+        tinham atraso positivo: 5 e 4 minutos.
+    #>
+    $h = Get-WMCollectionHealth -PatrolDir (New-PatrolDir 'futuro' @((Amostra '2026-08-16T18:00:00Z'))) -NowUtc $AGORA
+    Assert-True (-not $h.ok) 'amostra 24 h NO FUTURO não é coleta saudável'
+    Assert-True ($h.reason -match 'FUTURO') 'e a razão diz que o carimbo está à frente'
+    Assert-True ($h.minutesSinceLast -lt 0) 'o atraso negativo é registrado, não escondido'
+
+    # Diferença pequena de relógio entre escrita e leitura continua tolerada.
+    $h = Get-WMCollectionHealth -PatrolDir (New-PatrolDir 'quaseAgora' @((Amostra '2026-08-15T18:01:00Z'))) -NowUtc $AGORA
+    Assert-True $h.ok 'um minuto à frente é folga de relógio, não defeito'
+
+    <#
+        Cobertura rala: a ronda está viva e o dia tem quase nada. Não reprova —
+        máquina desligada é motivo legítimo — mas precisa aparecer, porque um
+        percentil sobre 1% das amostras não é o mesmo número que sobre todas.
+        A versão anterior calculava lastDayCoverage e nunca a usava, enquanto o
+        cabeçalho afirmava que comparava o que existe com o que deveria existir.
+    #>
+    $h = Get-WMCollectionHealth -PatrolDir (New-PatrolDir 'rala' @((Amostra '2026-08-15T17:59:00Z'))) -NowUtc $AGORA
+    Assert-True $h.ok 'uma amostra recente mantém a coleta saudável'
+    Assert-True ($h.reason -match 'amostras esperadas') 'mas a escassez do dia é declarada'
+    Assert-True ($h.lastDayCoverage -lt 1) 'e a cobertura do dia é medida'
+
     # =====================================================================
     Start-TestGroup 'Diferença de dias, com cultura hostil'
 

@@ -43,8 +43,21 @@ Import-Module (Join-Path $PSScriptRoot 'WinMonitor.psm1') -Force
 $cfg   = Get-WMConfig
 $fatos = Get-WMHostFacts
 
-$sondas = @($cfg.exam.probes)
-if ($sondas.Count -eq 0) { $sondas = @([pscustomobject]@{ name = 'Events'; key = 'evt' }) }
+<#
+    O recuo era CÓDIGO MORTO, e o caminho que ele existia para cobrir matava o
+    driver.
+
+    '@($cfg.exam.probes).Count -eq 0' nunca é verdade quando o bloco falta:
+    @($null).Count é UM. Então, com exam.probes ausente do config, a lista saía
+    com um elemento nulo, o recuo não disparava, e o exame morria montando a
+    amostra com uma chave vazia — 'o valor do argumento name não é válido'.
+
+    Monitor que morre é pior que monitor que registra um buraco: quem morre não
+    deixa nem o registro de que tentou.
+#>
+$sondas = @($cfg.exam.probes | Where-Object { $_ -and $_.name -and $_.key })
+$houveRecuo = ($sondas.Count -eq 0)
+if ($houveRecuo) { $sondas = @([pscustomobject]@{ name = 'Events'; key = 'evt' }) }
 
 $amostra = [ordered]@{
     v    = 1
@@ -54,6 +67,9 @@ $amostra = [ordered]@{
 }
 
 $cobertura = [ordered]@{}
+if ($houveRecuo) {
+    $cobertura['config'] = 'exam.probes ausente ou ilegivel no config: o exame recuou para a sonda de eventos apenas. Nao ha como saber o que mais deveria ter sido examinado.'
+}
 
 foreach ($s in $sondas) {
     $nome = [string]$s.name
@@ -90,8 +106,14 @@ foreach ($s in $sondas) {
     if ($r.reason) { $cobertura[$chave] = "sonda '$nome' com ressalva: $($r.reason)" }
 }
 
-# As sondas que este exame ainda não tem, ditas por nome e por motivo.
-foreach ($p in @($cfg.exam.missing)) {
+<#
+    As sondas que este exame ainda não tem, ditas por nome e por motivo.
+
+    O filtro não é zelo: sem ele, exam.missing ausente produzia @($null) com um
+    elemento, e a cobertura saía com uma lacuna de chave vazia e motivo vazio —
+    um buraco anônimo, que é pior que buraco nenhum porque parece declaração.
+#>
+foreach ($p in @($cfg.exam.missing | Where-Object { $_ -and $_.key })) {
     $cobertura[[string]$p.key] = [string]$p.reason
 }
 
