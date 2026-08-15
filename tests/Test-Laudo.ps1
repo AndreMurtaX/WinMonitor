@@ -245,6 +245,21 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     $rr = Test-WMLaudoNumbers -Text 'O sistema e o Microsoft Windows 11 Pro.' -Package $pacOs
     Assert-True $rr.ok 'e citar o nome do sistema inteiro continua passando'
 
+    <#
+        A REMOÇÃO DE LITERAIS IGNORA CAIXA, e isso não tinha teste — medido: dava
+        para reverter ao String.Replace sensível a caixa e a suíte continuava
+        verde. Com a mutação aplicada, "a placa e uma rtx 3080" virava órfão
+        3080, e "i9-11900k" virava órfãos 9 e 11900.
+
+        Reprovar laudo honesto é o modo de falha que faz alguém desligar a
+        guarda, e aí ela não guarda mais nada. Todos os outros testes de literal
+        usam a caixa exata do host.json, então nenhum exercitava a diferença.
+    #>
+    $rr = Test-WMLaudoNumbers -Package $pacHW -Text 'A placa e uma rtx 3080 e o processador um i9-11900k.'
+    Assert-True $rr.ok ('nome de peça em CAIXA BAIXA não é fabricação (órfãos: ' + ($rr.orphans -join ', ') + ')')
+    $rr = Test-WMLaudoNumbers -Package $pacHW -Text 'A placa e uma RTX 3080 E O PROCESSADOR UM I9-11900K.'
+    Assert-True $rr.ok 'nem em CAIXA ALTA'
+
     Assert-Equal 95 (@(Get-WMSpelledNumbers -Text 'noventa e cinco')[0].value) 'a soma por extenso é 95, não 90 e 5 soltos'
     Assert-Equal 100 (@(Get-WMSpelledNumbers -Text 'cem')[0].value) 'cem é 100'
 
@@ -468,6 +483,46 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
 
     $ambas = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"},{"ruleId":"R-GPU-TEMP-SPEC-3080","note":"n"}],"changedSinceLast":"","findings":[],"observations":[]}'
     Assert-True (Test-WMLaudoShape -Laudo $ambas -Package $pacDuas).ok 'declarar as duas passa'
+
+    <#
+        O SENTIDO INVERSO, que custou a TERCEIRA reprovação.
+
+        Transformar notVerified em lista estruturada fechou um buraco e abriu
+        outro: o ruleId declarado não era conferido contra nada, e não entrava
+        no texto que as guardas examinam. Medido pelo driver, com os achados
+        reais — todos APROVADOS e impressos sob "Não verificado":
+
+          R-SMART-DISK-FAILING, R-PSU-VOLTAGE-SAG   regras que não existem
+          R-CPU-TEMP-100C-ATINGIDA                  o 100 viajando no id
+          R-DISK-SPACE-LOW                          regra AVALIADA, com achado
+                                                    'agir' impresso acima
+
+        É a terceira vez que a mesma classe de defeito aparece neste projeto:
+        campo estruturado que nenhuma guarda inspeciona. O mesmo id escrito na
+        PROSA era acusado; dentro do objeto, passava.
+    #>
+    $inexistente = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"},{"ruleId":"R-GPU-TEMP-SPEC-3080","note":"n"},{"ruleId":"R-SMART-DISK-FAILING","note":"n"}],"changedSinceLast":"","findings":[],"observations":[]}'
+    $si = Test-WMLaudoShape -Laudo $inexistente -Package $pacDuas
+    Assert-True (-not $si.ok) 'declarar lacuna que não existe no pacote é rejeitado'
+    Assert-True ((@($si.missing) -join ' ') -match 'R-SMART-DISK-FAILING') 'e a regra inventada é nominada'
+
+    # Regra AVALIADA declarada como não verificada: contradição dentro do laudo.
+    $contradiz = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"},{"ruleId":"R-GPU-TEMP-DRIFT","note":"n"}],"changedSinceLast":"","findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a","action":"b"},{"ruleId":"R-DISK-SPACE-LOW","reading":"c","action":"d"}],"observations":[]}'
+    Assert-True (-not (Test-WMLaudoShape -Laudo $contradiz -Package $pac).ok) 'regra que FOI avaliada não pode ser declarada não verificada'
+
+    <#
+        E o número contrabandeado no identificador. Agora o ruleId entra no
+        texto conferido, então a guarda aritmética o vê como veria qualquer
+        outro dígito — o identificador legítimo é removido pela lista de
+        literais, o inventado não é.
+    #>
+    $comNumero = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-100C-ATINGIDA","note":"sem leitura"}],"changedSinceLast":"","findings":[],"observations":[]}'
+    $txtN = Get-WMLaudoText -Laudo $comNumero
+    Assert-True (-not (Test-WMLaudoNumbers -Text $txtN -Package $pacV).ok) 'número escondido dentro do ruleId cai na guarda aritmética'
+
+    # Cobertura completa: não há lacuna, então declarar qualquer uma é invenção.
+    $comLacuna = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-GPU-TEMP-DRIFT","note":"n"}],"changedSinceLast":"","findings":[],"observations":[]}'
+    Assert-True (-not (Test-WMLaudoShape -Laudo $comLacuna -Package $pacC).ok) 'cobertura completa com notVerified preenchido é rejeitada'
 
     # coverage.complete como STRING "false" desligava a guarda inteira.
     $pacStr = $pacV | ConvertTo-Json -Depth 12 | ConvertFrom-Json

@@ -247,15 +247,16 @@ o bloco de cobertura e o laudo anterior. Sem acesso à máquina, ao dado bruto o
 à tabela de limiares: o que não está no pacote ele não tem como inventar com
 aparência de dado.
 
-O que volta passa por quatro conferências, todas determinísticas. Nenhuma
+O que volta passa por quatro conferências, todas determinísticas — a tabela tem
+cinco linhas porque a última função confere duas obrigações distintas. Nenhuma
 precisa de um segundo modelo concordar:
 
 | Guarda | O que exige |
 | --- | --- |
 | Números | todo número extraído do texto tem de existir no pacote |
-| Regras citadas | só cita identificador de regra que o pacote contém |
+| Regras citadas | só cita identificador de regra que o pacote contém, na prosa **e** no campo estruturado |
 | Achados | os achados do laudo são **exatamente** os do pacote, com contagem |
-| Lacunas | `notVerified` é lista de identificadores e cobre **todas** as lacunas |
+| Lacunas | `notVerified` cobre **todas** as lacunas do pacote, e **só** elas |
 | Forma | cobertura incompleta obriga a declarar a lacuna; pacote sem achados proíbe hipótese |
 
 Reprovado, o laudo é reapresentado uma vez com os motivos exatos. Falhando de
@@ -378,14 +379,26 @@ projeto: o que não foi verificado precisa estar dito.
   guardas compram correção, não eloquência; para laudo de produção o provedor
   remoto continua sendo a escolha defensável.
 - **A extração de números é forte, não é total.** Cobre algarismo, decimal,
-  notação científica, milhar com ponto e numeral por extenso em português.
-  Continuam de fora: fração por extenso ("meio grau"), `mil` e seus compostos,
-  algarismo romano e numeral em outro idioma. Dígito que o conversor invariante
-  recusa — Unicode de largura inteira, por exemplo — vira órfão em vez de ser
-  descartado em silêncio.
+  notação científica, milhar com ponto, e numeral por extenso em português
+  incluindo `mil` e seus compostos. Continuam de fora: fração por extenso
+  ("meio grau"), `milhão`, algarismo romano e numeral em outro idioma. Dígito
+  que o conversor invariante recusa — Unicode de largura inteira, por exemplo —
+  vira órfão em vez de ser descartado em silêncio.
+- **O leitor de numeral por extenso tem falso positivo conhecido.** "mil vezes"
+  numa frase idiomática vira órfão e reprova um laudo honesto. Aceito porque a
+  reapresentação absorve o custo, e porque errar para o lado de acusar é o lado
+  certo de errar aqui.
 - **A prosa livre sem número ainda não é conferida.** As quatro guardas cobrem
   número, regra citada, achado e forma. Uma afirmação vaga e sem dígito dentro
-  do `summary` passa. É a fronteira conhecida do método.
+  do `summary` passa — inclusive uma que contradiga o veredito. O que se faz
+  contra isso não é conferência, é ordem de leitura: o parecer imprime veredito,
+  achados medidos e lacunas **antes** do texto do modelo, para que a
+  discordância fique visível em vez de plausível. É a fronteira conhecida do
+  método, e ela não fechou.
+- **O campo `note` de cada lacuna é prosa livre.** A lista de lacunas é
+  estrutural e obrigatória, mas o comentário ao lado de cada uma não é conferido
+  — um modelo pode listar a lacuna e escrever ali que ela está normal. O título
+  "Não verificado" e a lista permanecem; a negação fica ao lado.
 
 ---
 

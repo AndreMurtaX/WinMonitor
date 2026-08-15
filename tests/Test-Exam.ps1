@@ -87,6 +87,56 @@ try {
     }
 
     # =====================================================================
+    Start-TestGroup 'Sonda de eventos: o log DESABILITADO  [MUTAÇÃO]'
+
+    <#
+        A verificação adversarial mediu que este caminho não tinha teste nenhum:
+        revertendo a recusa de log desabilitado, OU restaurando o atalho antigo
+        de RecordCount igual a zero, a suíte continuava verde. O código estava
+        certo e a trava tinha nascido morta.
+
+        Log desabilitado devolve RecordCount NULO, e [int]$null é 0 em
+        PowerShell — era assim que os 84 logs desabilitados desta máquina
+        passavam por "legível e vazio", fazendo a sonda afirmar zero
+        desligamento inesperado a partir de um log que ela nunca abriu.
+
+        O teste usa um log desabilitado DE VERDADE, escolhido em tempo de
+        execução. Se a máquina não tiver nenhum, ele diz isso em vez de fingir
+        que verificou.
+    #>
+    <#
+        try/catch e não só -ErrorAction: com $ErrorActionPreference = 'Stop',
+        um único log que recuse metadados derruba a suíte inteira, e enumerar
+        mil logos garante que algum recuse. O erro aqui é esperado e irrelevante
+        — o que importa é achar UM desabilitado.
+    #>
+    <#
+        SEM 'Select-Object -First' aqui. Ele para o pipeline lançando uma
+        exceção interna de parada que NÃO é pega por um catch comum: ela sobe,
+        executa o finally da suíte e o script termina sem imprimir o resumo —
+        e o portão então acusa "não chegou ao fim", que é o diagnóstico certo
+        para o sintoma errado. Custou uma rodada de depuração descobrir isso.
+    #>
+    $desabilitado = @()
+    try {
+        $todos = @(Get-WinEvent -ListLog * -ErrorAction SilentlyContinue)
+        $desabilitado = @($todos | Where-Object { -not $_.IsEnabled })
+    } catch { }
+
+    if ($desabilitado.Count -eq 0) {
+        Add-TestResult -Ok $false -Name 'nenhum log desabilitado nesta máquina: o caminho ficou SEM verificação' -Detail 'declarado, não escondido'
+    } else {
+        $nome = $desabilitado[0].LogName
+        $dd = & $sonda -LogName $nome -WindowDays 30
+
+        Assert-True $dd.ok "a sonda não explode com log desabilitado ($nome)"
+        Assert-True ($dd.data.logReadable -eq $false) 'log desabilitado NÃO é declarado legível'
+        Assert-True ($null -eq $dd.data.wheaErrors) 'e wheaErrors é NULO, não zero'
+        Assert-True ($null -eq $dd.data.unexpectedShutdowns) 'unexpectedShutdowns idem'
+        Assert-True ($dd.reason -match 'DESABILITADO') 'e a razão diz que o log está desabilitado'
+    }
+
+    # =====================================================================
     Start-TestGroup 'Invoke-Exam: sonda ausente vira lacuna, nunca silêncio'
 
     $ex = & (Join-Path $root 'src\Invoke-Exam.ps1') -PassThru -NoWrite

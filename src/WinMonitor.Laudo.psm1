@@ -909,6 +909,44 @@ function Test-WMLaudoShape {
         if ($faltando.Count -gt 0) {
             [void]$faltas.Add("notVerified não declara $($faltando.Count) de $($lacunas.Count) lacunas do pacote: $($faltando -join ', ')")
         }
+
+        <#
+            E O SENTIDO INVERSO, que faltava e custou a terceira reprovação.
+
+            Conferir só COBERTURA deixava o campo aceitar qualquer identificador
+            inventado. Medido pelo driver, contra os achados reais:
+
+              - R-SMART-DISK-FAILING e R-PSU-VOLTAGE-SAG, regras que não existem
+                em thresholds.json: aprovadas e impressas sob "Não verificado".
+              - R-CPU-TEMP-100C-ATINGIDA: o 100 viajou dentro do identificador,
+                onde a guarda aritmética não olha. É exatamente o número que a
+                tabela de limiares se recusa a escrever por falta de procedência.
+              - R-DISK-SPACE-LOW declarada não verificada NO MESMO laudo que
+                imprime o achado 'agir' dela três linhas acima.
+
+            A causa é a de sempre neste projeto, e é a terceira vez: campo
+            estruturado que nenhuma guarda inspeciona. Quando o mesmo id era
+            escrito na PROSA, Test-WMLaudoRuleIds o acusava; dentro do objeto,
+            passava — porque Get-WMLaudoText só repassava 'note'.
+
+            Duas travas agora. Aqui: todo id declarado tem de ser uma lacuna DO
+            PACOTE — nem regra inexistente, nem regra que foi avaliada. E em
+            Get-WMLaudoText: o ruleId passa a entrar no texto conferido, para
+            que número embutido em identificador inventado caia na guarda
+            aritmética como qualquer outro.
+        #>
+        $intrusos = @($declaradas | Where-Object { $lacunas -notcontains $_ })
+        if ($intrusos.Count -gt 0) {
+            [void]$faltas.Add("notVerified declara o que não é lacuna do pacote: $($intrusos -join ', ')")
+        }
+    }
+    elseif (@($Laudo.notVerified).Count -gt 0) {
+        <#
+            Cobertura COMPLETA e notVerified preenchido: não há lacuna nenhuma
+            para declarar, então tudo que estiver ali é invenção. Sem este ramo,
+            o bloco acima nem roda e o campo fica livre.
+        #>
+        [void]$faltas.Add('cobertura completa e notVerified preenchido: não há lacuna a declarar')
     }
 
     if (@($Package.findings).Count -eq 0 -and @($Laudo.observations).Count -gt 0) {
@@ -928,10 +966,23 @@ function Get-WMLaudoText {
     foreach ($c in 'summary', 'changedSinceLast') {
         if ($Laudo.$c) { [void]$partes.Add([string]$Laudo.$c) }
     }
+    <#
+        O ruleId ENTRA no texto conferido, não só a nota.
+
+        Enquanto só a nota entrava, um identificador inventado passeava com
+        número dentro: 'R-CPU-TEMP-100C-ATINGIDA' era aprovado e o 100 nunca
+        chegava à guarda aritmética. Identificador legítimo é removido pela
+        lista de literais — ele está em coverage —, então incluí-lo aqui não
+        acusa laudo honesto; o inventado, que não é literal de nada, fica
+        exposto com todos os dígitos que carrega.
+    #>
     foreach ($n in @($Laudo.notVerified)) {
         if ($null -eq $n) { continue }
         if ($n -is [string]) { [void]$partes.Add([string]$n) }
-        else { if ($n.note) { [void]$partes.Add([string]$n.note) } }
+        else {
+            if ($n.ruleId) { [void]$partes.Add([string]$n.ruleId) }
+            if ($n.note)   { [void]$partes.Add([string]$n.note) }
+        }
     }
     foreach ($a in @($Laudo.findings)) {
         foreach ($c in 'reading', 'action') { if ($a.$c) { [void]$partes.Add([string]$a.$c) } }

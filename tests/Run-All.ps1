@@ -31,24 +31,65 @@
     propósito: se ele se ajustasse sozinho, não seria piso.
 #>
 [CmdletBinding()]
-param([switch]$Quiet)
+param(
+    [switch]$Quiet,
+    <#
+        Costura para Test-Gate.ps1: o portão precisa poder rodar contra suítes
+        sintéticas, senão ele é a única peça do projeto que ninguém consegue
+        testar — e foi exatamente essa a situação em que ele mentiu.
 
-$suites = @(
-    @{ file = 'Test-Rollup.ps1';  min = 147 }
-    @{ file = 'Test-Rules.ps1';   min = 135 }
-    @{ file = 'Test-Laudo.ps1';       min = 98 }
-    @{ file = 'Test-LaudoDriver.ps1'; min = 23 }
-    @{ file = 'Test-Report.ps1';      min = 60 }
-    @{ file = 'Test-Exam.ps1';        min = 25 }
-    @{ file = 'Test-Drivers.ps1'; min = 56  }
+        -SuiteDir troca o diretório; -SuiteSpec troca a lista, no formato
+        'arquivo:piso' separado por vírgula. Nenhum dos dois é usado em produção.
+    #>
+    [string]$SuiteDir,
+    [string]$SuiteSpec,
+    [int]$SuiteTimeoutSec = 600
 )
 
+$suites = @(
+    @{ file = 'Test-Rollup.ps1';      min = 147 }
+    @{ file = 'Test-Rules.ps1';       min = 135 }
+    @{ file = 'Test-Laudo.ps1';       min = 105 }
+    @{ file = 'Test-LaudoDriver.ps1'; min = 23  }
+    @{ file = 'Test-Report.ps1';      min = 60  }
+    @{ file = 'Test-Exam.ps1';        min = 30  }
+    @{ file = 'Test-Gate.ps1';        min = 16  }
+    @{ file = 'Test-Drivers.ps1';     min = 56  }
+)
+
+if ($SuiteSpec) {
+    $suites = @(
+        $SuiteSpec -split ',' | Where-Object { $_ } | ForEach-Object {
+            $par = $_ -split ':'
+            @{ file = $par[0].Trim(); min = [int]$par[1] }
+        }
+    )
+}
+
+$dir     = if ($SuiteDir) { $SuiteDir } else { $PSScriptRoot }
 $psExe   = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $falhas  = New-Object System.Collections.ArrayList
 $totalOk = 0
 
+<#
+    SUÍTE QUE EXISTE E NÃO ESTÁ NA LISTA É VERMELHO.
+
+    O piso pega suíte esvaziada; não pegava suíte APAGADA DA LISTA. Medido: tirar
+    uma entrada de $suites fazia 23 testes sumirem e o portão continuava verde,
+    apenas com um total menor — e ninguém confere total de cabeça. Agora a lista
+    é confrontada com o diretório: arquivo Test-*.ps1 que ninguém roda acusa.
+#>
+$naDisco = @(
+    Get-ChildItem -LiteralPath $dir -Filter 'Test-*.ps1' -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne 'TestKit.ps1' } | ForEach-Object { $_.Name }
+)
+$naLista = @($suites | ForEach-Object { $_.file })
+foreach ($f in $naDisco) {
+    if ($naLista -notcontains $f) { [void]$falhas.Add("$f existe em tests\ e não está na lista do portão: ninguém o executa") }
+}
+
 foreach ($s in $suites) {
-    $p = Join-Path $PSScriptRoot $s.file
+    $p = Join-Path $dir $s.file
     ""
     "##################  $($s.file)  ##################"
 
@@ -58,19 +99,54 @@ foreach ($s in $suites) {
         continue
     }
 
-    # Processo próprio: o código de saída é desta suíte, não da anterior.
-    $saida = & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $p 2>&1
-    $codigo = $LASTEXITCODE
+    <#
+        Processo próprio, COM PRAZO. O código de saída é desta suíte, não da
+        anterior — e uma suíte que trava não pode segurar o portão para sempre:
+        medido, o portão esperava indefinidamente e depois declarava verde.
+    #>
+    $tmpOut = [System.IO.Path]::GetTempFileName()
+    $proc = Start-Process -FilePath $psExe -PassThru -NoNewWindow -Wait:$false `
+                -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $p `
+                -RedirectStandardOutput $tmpOut -RedirectStandardError ($tmpOut + '.err')
 
-    if ($Quiet) { $saida | Select-Object -Last 6 } else { $saida }
+    <#
+        Tocar em .Handle ANTES de esperar. Sem isto, Start-Process -PassThru
+        devolve um objeto cujo ExitCode vem VAZIO depois do término, e a
+        comparação 'código de saída diferente de zero' passa a reprovar tudo —
+        inclusive suíte verde. É a armadilha clássica do -PassThru, e ela
+        transformaria o portão em ruído até alguém desligá-lo.
+    #>
+    $null = $proc.Handle
 
-    $texto = ($saida | Out-String)
-    $m = [regex]::Match($texto, '(\d+)\s+passou,\s+(\d+)\s+falhou')
+    if (-not $proc.WaitForExit($SuiteTimeoutSec * 1000)) {
+        try { $proc.Kill() } catch { }
+        [void]$falhas.Add("$($s.file): estourou o prazo de $SuiteTimeoutSec s e foi morta")
+        Remove-Item -LiteralPath $tmpOut, ($tmpOut + '.err') -Force -ErrorAction SilentlyContinue
+        continue
+    }
+    $codigo = $proc.ExitCode
+    $texto  = (Get-Content -LiteralPath $tmpOut -Raw -ErrorAction SilentlyContinue) + "`n" +
+              (Get-Content -LiteralPath ($tmpOut + '.err') -Raw -ErrorAction SilentlyContinue)
+    Remove-Item -LiteralPath $tmpOut, ($tmpOut + '.err') -Force -ErrorAction SilentlyContinue
 
-    if (-not $m.Success) {
+    if ($Quiet) { ($texto -split "`n" | Select-Object -Last 6) -join "`n" } else { $texto }
+
+    $ms = @([regex]::Matches($texto, '(\d+)\s+passou,\s+(\d+)\s+falhou'))
+
+    if ($ms.Count -eq 0) {
         [void]$falhas.Add("$($s.file): não imprimiu o resumo — a suíte não chegou ao fim (código $codigo)")
         continue
     }
+    <#
+        MAIS DE UM RESUMO também é vermelho. O portão lia o primeiro e ignorava
+        o resto: uma suíte que imprimisse '99 passou, 0 falhou' e depois o
+        resumo verdadeiro com falhas passava. Resumo é um, ou não é resumo.
+    #>
+    if ($ms.Count -gt 1) {
+        [void]$falhas.Add("$($s.file): imprimiu $($ms.Count) linhas de resumo — não dá para saber qual é a verdadeira")
+        continue
+    }
+    $m = $ms[0]
 
     $passou = [int]$m.Groups[1].Value
     $falhou = [int]$m.Groups[2].Value
@@ -83,8 +159,21 @@ foreach ($s in $suites) {
     }
 }
 
+<#
+    PISO GLOBAL, além do piso por suíte. É a rede que pega perda de teste em
+    qualquer lugar — inclusive nos casos que o piso por suíte não vê, porque a
+    suíte inteira deixou de ser executada.
+#>
+# Soma à mão: Measure-Object -Property não enxerga CHAVE de hashtable, só
+# propriedade de objeto — e falha em vez de devolver zero.
+$pisoTotal = 0
+foreach ($s in $suites) { $pisoTotal += [int]$s.min }
+if (-not $SuiteDir -and $totalOk -lt $pisoTotal) {
+    [void]$falhas.Add("total de $totalOk testes, abaixo do piso global de $pisoTotal")
+}
+
 ""
-"total de testes que passaram: $totalOk"
+"total de testes que passaram: $totalOk   (piso global: $pisoTotal)"
 if ($falhas.Count -eq 0) {
     "TODAS AS SUITES PASSARAM"
     exit 0
