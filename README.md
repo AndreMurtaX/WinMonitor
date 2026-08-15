@@ -47,7 +47,7 @@ que está normal. Métrica ausente e métrica boa não podem se parecer.
 | F3 | Exame completo: SMART, eventos, sensores | a fazer |
 | F4 | Regras e limiares | pronto |
 | F5 | Parecer com provedor plugável | pronto |
-| F6 | Notificação e relatório de tendência | a fazer |
+| F6 | Notificação e relatório de tendência | pronto (canal remoto não configurado) |
 
 **O que ainda não roda sozinho.** A tarefa agendada não está registrada, então
 não há coleta contínua — e sem coleta não se forma linha-base, e sem linha-base
@@ -198,6 +198,44 @@ A linha-base se recusa a existir sobre dado insuficiente: exige 14 dias de ronda
 que será congelada, e recusa também se o perfil resultante não contiver a faixa
 de carga alta — sem ela não há contra o que comparar. Antes disso a resposta é
 "ainda não sei" — que é honesta, e melhor que um diagnóstico apoiado em ruído.
+
+---
+
+## Por que o monitor fala quando não há nada a dizer
+
+Um monitor que só fala quando há problema é indistinguível de um monitor morto.
+Três semanas de silêncio significam «máquina saudável» ou «o agente parou em 12
+de julho e ninguém percebeu»? As duas hipóteses produzem exatamente a mesma
+caixa de entrada vazia.
+
+Essa ambiguidade não se resolve com mais regra de alerta. Resolve-se obrigando o
+sistema a falar quando **não** há nada a dizer:
+
+- **Pulso.** Passados `heartbeatDays` sem nenhuma notificação, o relatório sai
+  assim mesmo dizendo que nada mereceu atenção. Silêncio deixa de ser ambíguo
+  porque silêncio deixa de existir.
+- **Saúde da própria coleta.** Antes de qualquer conclusão sobre a máquina,
+  confere-se se a ronda realmente rodou. Um veredito «normal» calculado sobre
+  dado de anteontem não é uma boa notícia — é uma notícia falsa, e a mais
+  perigosa que este projeto pode dar. Aparece na primeira linha do relatório.
+- **Cegueira prolongada.** Cobertura incompleta por `blindDays` seguidos vira
+  aviso mesmo sem nenhum achado, porque o veredito continua saindo «normal» —
+  verdade sobre o que foi medido, silêncio sobre o que não foi.
+
+E a regra que sustenta as três: **o estado só avança se a entrega deu certo.** Se
+todos os canais falharem, o dia não é marcado como notificado e a próxima
+execução tenta de novo. Gravar «notificado» quando ninguém foi notificado é a
+forma mais fácil de construir um monitor que se acha em dia.
+
+```powershell
+.\src\Invoke-Report.ps1 -DryRun     # monta e mostra, não entrega nem grava estado
+.\src\Invoke-Report.ps1             # decide, entrega, registra
+```
+
+O canal `File` funciona sem configurar nada — mas um arquivo numa máquina que
+você não está olhando não notifica ninguém. Para receber de fato, configure
+`webhook.url` em `config/secrets.json` (ntfy, Discord, Slack, Teams ou endpoint
+próprio) e acrescente `"Webhook"` a `notify.channels`.
 
 ---
 
