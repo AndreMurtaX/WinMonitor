@@ -326,6 +326,40 @@ $mutantes = @(
        de='[System.IO.File]::AppendAllText($Path, $line + "`r`n", $enc)'
        para='[System.IO.File]::WriteAllText($Path, $line + "`r`n", $enc)'; suite='Test-Patrol.ps1' }
 
+    <#
+        A FERRAMENTA QUE PROTEGE O ACENTO DESTRUIA O ACENTO.
+
+        [Encoding]::UTF8.GetString() nao falha: substitui byte invalido por
+        U+FFFD e devolve a string. Gravar de volta torna a corrupcao permanente,
+        com a mensagem "BOM adicionado" anunciando sucesso. Medido: 5 acentos
+        CP1252 -> 5 U+FFFD, bytes originais perdidos.
+    #>
+    @{ id='BL-E1'; nome='UTF-8 invalido nao vira U+FFFD gravado'; arq='tools\Repair-Encoding.ps1'
+       de='$estrito = New-Object System.Text.UTF8Encoding($false, $true)'
+       para='$estrito = New-Object System.Text.UTF8Encoding($false, $false)'; suite='Test-Patrol.ps1' }
+
+    @{ id='BL-E2'; nome='UTF-8 valido nao e lido como ANSI';      arq='tools\Repair-Encoding.ps1'
+       de='$text = $estrito.GetString($bytes)'
+       para='$text = [System.Text.Encoding]::Default.GetString($bytes)'; suite='Test-Patrol.ps1' }
+
+    <#
+        A TERCEIRA sonda com o efeito colateral. O commit anterior disse "as
+        outras duas" - eram tres, e esta escapou porque o exame SEMPRE passa
+        -Facts: o ramo do default nunca executava sob o teste que a exercita.
+    #>
+    @{ id='BL-W5'; nome='sonda de eventos nao escreve arquivo';   arq='src\probes\Probe-Events.ps1'
+       de="param(`r`n    `$Facts,"
+       para="param(`r`n    `$Facts,`r`n    `$Ignorado = `$(`$Facts = Get-WMHostFacts),"
+       suite='Test-Patrol.ps1' }
+
+    <#
+        A PROMESSA QUE O DONO DA MAQUINA LEU ANTES DE DAR TOKEN DE ADMINISTRADOR
+        a uma tarefa que roda a cada minuto. Ela era falsa nas duas metades, e o
+        MESMO commit que a escreveu mediu as duas como falsas.
+    #>
+    @{ id='BL-P3'; nome='o plano nao promete o que nao destrava'; arq='tools\Register-PatrolTask.ps1'
+       de='ATENCAO: a ronda NAO le SMART fino'
+       para='a ronda passa a poder ler SMART detalhado'; suite='Test-Drivers.ps1' }
     @{ id='A5';    nome='regra malformada conta como lacuna';     arq='src\WinMonitor.Rules.psm1'
        de='$lacunas = $semFonte.Count + $malformadas.Count + $semDado.Count'
        para='$lacunas = $semFonte.Count + $semDado.Count'; suite='Test-Rules.ps1' }

@@ -589,7 +589,22 @@ try {
     #>
     $planoElevado = (& $registrador -Elevado -Simular -TaskName 'PatrolTesteSimulado' | Out-String)
     Assert-True ($planoElevado -match 'nivel Highest') 'com -Elevado o PRINCIPAL sai com nível Highest'
-    Assert-True ($planoElevado -match 'SMART detalhado e temperatura de CPU') 'e o plano diz o que isso destrava'
+    <#
+        A ASSERCAO COBRAVA UMA PROMESSA FALSA, e por isso a trancava.
+
+        O plano dizia "a ronda passa a poder ler SMART detalhado e temperatura
+        de CPU". As duas metades sao falsas, e o MESMO commit que escreveu isso
+        mediu as duas: a sonda de SMART e do EXAME, que nao tem tarefa agendada
+        nenhuma; e a elevacao nao destrava temperatura de nucleo, porque a zona
+        ACPI da 27,9 C com a CPU a 10% e nao e sensor de nucleo.
+
+        O dono desta maquina deu token de administrador a uma tarefa que roda a
+        cada minuto por causa dessa frase. Agora o plano diz o que o nivel
+        realmente faz, e o que ele NAO faz.
+    #>
+    Assert-True ($planoElevado -match 'a ronda NAO le SMART fino') 'o plano DIZ que a ronda nao le SMART fino'
+    Assert-True ($planoElevado -match 'nao destrava nada hoje') 'e que sem tarefa do exame o nivel nao destrava nada'
+    Assert-True (-not ($planoElevado -match 'passa a poder ler SMART')) 'sem repetir a promessa que o proprio commit mediu como falsa'
     Assert-True ($planoS4U -match 'nivel Limited') 'e sem -Elevado o principal sai com nível Limited'
 
     <#

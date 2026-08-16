@@ -56,7 +56,18 @@ param(
     [int]$MaxEvents = 200
 )
 
-if ($null -eq $Facts) { $Facts = Get-WMHostFacts }
+<#
+    $Facts NAO e usado por esta sonda, e o default deliberadamente NAO chama
+    Get-WMHostFacts: a chamada grava data\host.json como EFEITO COLATERAL de
+    um parametro morto - escrita a partir de codigo que ninguem le.
+
+    ERAM TRES SONDAS, e o commit anterior disse "as outras duas". Cpu e
+    Memory foram consertadas; esta ficou, e o motivo de ela ter escapado e
+    instrutivo: o exame SEMPRE passa -Facts, entao o ramo do default nunca
+    executa sob o teste que a exercita. Defensor de existencia nao e
+    defensor de efeito colateral.
+#>
+$null = $Facts
 
 <#
     Se -Since vier de fora, a janela DECLARADA passa a ser a janela real.

@@ -221,6 +221,83 @@ try {
     Assert-Equal 2 $linhas2.Count 'a execução seguinte ANEXA em vez de substituir'
     Assert-Equal $linhas[0] $linhas2[0] 'e a amostra anterior fica intacta'
 
+    # =====================================================================
+    Start-TestGroup 'A ferramenta que protege o acento NÃO pode destruí-lo  [MUTAÇÃO]'
+
+    <#
+        Repair-Encoding existe para que um .ps1 sem BOM não seja lido na página
+        ANSI e corrompa acento. Medido pela décima terceira verificação: ela
+        fazia exatamente o oposto.
+
+        [Encoding]::UTF8.GetString() NUNCA falha — ele substitui cada byte
+        inválido por U+FFFD e devolve a string. Gravar isso de volta torna a
+        corrupção PERMANENTE, e a ferramenta anunciava 'BOM adicionado' como
+        sucesso:
+
+            antes  : ... 231 227 233 245 225 13 10   (5 acentos CP1252)
+            depois : ... 239 191 189 (x5) 13 10      (5 U+FFFD)
+            byte original 0xE7 ainda presente: False
+
+        Nenhum arquivo do repositório foi danificado, porque todos já tinham BOM
+        e ela nunca os reescreveu. O defeito era latente e destrutivo.
+    #>
+    $projEnc = New-ProjetoLimpo 'encoding'
+    $dirTools = New-Item -ItemType Directory -Path (Join-Path $projEnc 'tools') -Force
+    Copy-Item -LiteralPath (Join-Path $root 'tools\Repair-Encoding.ps1') -Destination $dirTools -Force
+
+    $arqAnsi = Join-Path $projEnc 'src\Acentuado.ps1'
+    [System.IO.File]::WriteAllBytes($arqAnsi, [byte[]](35, 32, 120, 32, 0xE7, 0xE3, 0xE9, 0xF5, 0xE1, 13, 10))
+    $null = & (Join-Path $projEnc 'tools\Repair-Encoding.ps1')
+
+    $textoRecuperado = [System.IO.File]::ReadAllText($arqAnsi)
+    Assert-Equal 0 (@([regex]::Matches($textoRecuperado, [char]0xFFFD))).Count `
+        'arquivo ANSI NÃO vira U+FFFD: a corrupção não é gravada como permanente'
+    Assert-True ($textoRecuperado.Contains([char]0xE7)) 'e o cedilha volta, em vez de ser apagado'
+    Assert-True ($textoRecuperado.Contains([char]0xE3)) 'e o til também'
+
+    <#
+        E O CONTRÁRIO: arquivo que JÁ é UTF-8 válido não pode ser lido como
+        ANSI, senão a "correção" duplicaria cada byte acentuado. Sem esta
+        asserção, trocar a detecção por "sempre ANSI" passaria no teste acima.
+    #>
+    $arqUtf8 = Join-Path $projEnc 'src\JaUtf8.ps1'
+    $conteudoUtf8 = '# x ' + [char]0xE7 + [char]0xE3 + [char]0xE9 + "`r`n"
+    [System.IO.File]::WriteAllText($arqUtf8, $conteudoUtf8, (New-Object System.Text.UTF8Encoding($false)))
+    $null = & (Join-Path $projEnc 'tools\Repair-Encoding.ps1')
+    $textoUtf8 = [System.IO.File]::ReadAllText($arqUtf8)
+    Assert-True ($textoUtf8.Contains([char]0xE7 + [string][char]0xE3 + [string][char]0xE9)) 'arquivo que já era UTF-8 válido fica intacto'
+    Assert-Equal 0 (@([regex]::Matches($textoUtf8, [char]0xFFFD))).Count 'sem U+FFFD nele tampouco'
+
+    # =====================================================================
+    Start-TestGroup 'A TERCEIRA sonda também não escreve arquivo  [MUTAÇÃO]'
+
+    <#
+        O commit anterior disse "as outras duas". Eram TRÊS: Probe-Events
+        continuava com o default que chama Get-WMHostFacts, e $Facts não é usado
+        em mais nenhuma linha daquele arquivo — a linha existia unicamente para
+        produzir o efeito colateral.
+
+        Ela escapou porque o exame SEMPRE passa -Facts: o ramo do default nunca
+        executava sob o teste que exercita a sonda. Defensor de existência não é
+        defensor de efeito colateral.
+    #>
+    $projEvt = New-ProjetoLimpo 'sem-efeito-evt'
+    $roteiroEvt = Join-Path $projEvt 'roda-eventos.ps1'
+    [System.IO.File]::WriteAllText($roteiroEvt, (@(
+        "Import-Module (Join-Path '$projEvt' 'src\WinMonitor.psm1') -Force"
+        "`$null = & (Join-Path '$projEvt' 'src\probes\Probe-Events.ps1') -WindowDays 1"
+    ) -join "`r`n"), (New-Object System.Text.UTF8Encoding($true)))
+
+    $saidaEvt = Join-Path $tmp 'eventos.txt'
+    $pEvt = Start-Process -FilePath $psExe -PassThru -NoNewWindow -Wait:$false `
+                -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $roteiroEvt `
+                -RedirectStandardOutput $saidaEvt -RedirectStandardError ($saidaEvt + '.err')
+    $null = $pEvt.Handle
+    $null = $pEvt.WaitForExit(180000)
+    Assert-Equal 0 $pEvt.ExitCode 'a sonda de eventos roda com o módulo carregado'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $projEvt 'data\host.json'))) `
+        'e NÃO cria data\host.json: a terceira sonda também é leitura pura'
+
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

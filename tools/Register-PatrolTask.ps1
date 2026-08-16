@@ -141,11 +141,21 @@ $boot.Repetition = $now.Repetition
     O NÍVEL DE EXECUÇÃO É O QUE SEPARA A RONDA DO EXAME.
 
     -Elevado registra com RunLevel Highest: a ronda passa a rodar com token de
-    administrador, e com ele as leituras que HOJE ficam declaradas como lacuna
-    passam a ser possíveis — Get-StorageReliabilityCounter (setores realocados,
-    horas ligado) e MSAcpi_ThermalZoneTemperature (temperatura de CPU). Medido:
-    sem elevação as duas devolvem acesso negado; é a lacuna 'smartDetalhado'
-    que a F3 declara.
+    administrador.
+
+    E O QUE ISSO **NÃO** DESTRAVA, porque eu já escrevi aqui que destravava:
+
+      - A ronda NÃO lê SMART fino. Get-StorageReliabilityCounter é chamado pela
+        sonda SmartDetail, que é do EXAME — e o exame não tem tarefa agendada
+        nenhuma. Enquanto não tiver, este nível não muda dado nenhum.
+      - Temperatura de NÚCLEO de CPU a elevação não destrava. Medido nesta
+        máquina depois de elevar: MSAcpi_ThermalZoneTemperature responde, com
+        UMA zona a 27,9 C e a CPU a ~10% de uso. Um núcleo nesse regime estaria
+        entre 35 e 50 C — aquilo é zona ambiente ou de chipset.
+
+    O dono desta máquina deu token de administrador a uma tarefa que roda a cada
+    minuto por causa da frase anterior, que eu escrevi e o mesmo commit mediu
+    como falsa. Ela fica registrada aqui em vez de apagada.
 
     Exige que a conta seja administradora E que o registro seja feito de um
     prompt elevado. Sem -Elevado nada muda de comportamento: a ronda continua
@@ -231,7 +241,7 @@ if ($Simular) {
         linhas, cometido dentro da defesa contra ele.
     #>
     if ($nivel -eq 'Highest') {
-        "Nivel Highest: a ronda passa a poder ler SMART detalhado e temperatura de CPU."
+        "Nivel Highest: a ronda roda com token de administrador. ATENCAO: a ronda NAO le SMART fino - essa sonda e do EXAME, que nao tem tarefa agendada. E temperatura de NUCLEO de CPU a elevacao NAO destrava: medido, a zona ACPI da 27,9 C com a CPU a 10%, que nao e sensor de nucleo. Sem uma tarefa do exame rodando elevada, este nivel nao destrava nada hoje."
     } else {
         "Nivel Limited: SMART detalhado e temperatura de CPU seguem como lacuna DECLARADA."
     }
