@@ -83,6 +83,58 @@ function New-WMLaudoPackage {
     $pacote.coverage = $Findings.coverage
 
     <#
+        A LISTA PRONTA DAS LACUNAS A DECLARAR — e ela existe porque a exigência
+        estava certa e o pacote, hostil.
+
+        A guarda pede que notVerified cubra TODAS as lacunas e SÓ elas. Para
+        obedecer, o modelo tinha de olhar 'coverage', entender que 'evaluated' é
+        o conjunto do que FOI verificado e que os outros cinco blocos são o que
+        NÃO foi, e derivar a união deles. É dedução de pertinência de conjunto
+        sobre estrutura aninhada.
+
+        Medido com dois modelos de 7B: os DOIS erraram do mesmo jeito, listando
+        exatamente as regras de 'evaluated' como não verificadas e omitindo as
+        lacunas reais. Quando dois modelos independentes erram igual, o problema
+        não é o modelo.
+
+        Pedir dedução e depois reprovar por errar a dedução é armar a falha. O
+        pacote passa a trazer a resposta pronta, e a instrução vira "copie estes
+        identificadores" — que é verificável e trivial de obedecer.
+
+        A guarda NÃO afrouxa: ela continua conferindo contra o coverage, não
+        contra esta lista. Se as duas discordarem, é defeito aqui, e o teste
+        compara as duas.
+    #>
+    $lacunas = New-Object System.Collections.ArrayList
+    foreach ($bloco in 'unsourced', 'malformed', 'noData', 'noBaseline', 'notApplicable') {
+        $n = Get-WMNodeChild $Findings.coverage $bloco
+        foreach ($k in (Get-WMNodeKeys $n)) {
+            [void]$lacunas.Add([ordered]@{
+                ruleId = ([string]$k -split '#')[0]
+                why    = [string](Get-WMNodeChild $n $k)
+            })
+        }
+    }
+    $pacote.gapsToDeclare = @($lacunas)
+
+    <#
+        DITO, NÃO DEDUZIDO — a mesma lição de gapsToDeclare, no campo vizinho.
+
+        A regra é: sem achado no pacote, não há hipótese legítima a levantar,
+        porque observação é correlação entre achados e causa provável deles. A
+        regra está certa e continua valendo na guarda.
+
+        Só que ela também exigia dedução: o modelo tinha de olhar findings,
+        notar que está vazio, e concluir que outro campo deve sumir. Medido: os
+        dois modelos de 7B preencheram observations mesmo depois de eu tirar o
+        campo de 'required' e escrever a proibição no prompt. Foi o último
+        motivo de reprovação a sobrar.
+
+        Uma bandeira no pacote troca dedução por leitura.
+    #>
+    $pacote.observationsAllowed = (@($Findings.findings).Count -gt 0)
+
+    <#
         Continuidade. Sem isto o parecer não consegue dizer "isto já foi
         apontado há dois meses e piorou" — frase que nenhum retrato instantâneo
         produz, e que costuma ser a informação mais útil do laudo.
@@ -474,9 +526,41 @@ function Test-WMLaudoNumbers {
     #>
     if ($Package.coverage) {
         foreach ($b in 'unsourced', 'malformed', 'noData', 'noBaseline', 'notApplicable') {
-            foreach ($k in (Get-WMNodeKeys (Get-WMNodeChild $Package.coverage $b))) {
+            $bloco = Get-WMNodeChild $Package.coverage $b
+            foreach ($k in (Get-WMNodeKeys $bloco)) {
                 [void]$literais.Add([string]$k)
                 [void]$literais.Add(([string]$k -split '#')[0])
+
+                <#
+                    O TEXTO DA LACUNA, e os caminhos de métrica dentro dele.
+
+                    A razão de uma lacuna é 'métrica ausente ou sem medida:
+                    gpu.*.tempCByLoad.b75.p95' — e o modelo é EXPLICITAMENTE
+                    instruído a relatar as lacunas. Ao copiar a razão, os 75 e
+                    95 do caminho viravam número inventado. Medido: foi o único
+                    motivo de reprovação que sobrou para o qwen2.5.
+
+                    Duas remoções, e a diferença entre elas é deliberada:
+
+                      - a RAZÃO INTEIRA, como literal: citar o pacote palavra
+                        por palavra é legítimo e passa.
+                      - os CAMINHOS DE MÉTRICA dela, isoladamente: eles são
+                        identificadores e aparecem em qualquer paráfrase.
+
+                    O que NÃO é liberado são os números soltos da prosa da
+                    razão. O texto do R-CPU-TEMP-SPEC contém '100 C atribuido a
+                    posts de comunidade'; liberar esse 100 devolveria à guarda
+                    exatamente o buraco que quase deixou passar 'a CPU chegou a
+                    100 graus'. Citação literal passa; reaproveitar o número
+                    noutra frase, não.
+                #>
+                $razao = [string](Get-WMNodeChild $bloco $k)
+                if (-not [string]::IsNullOrWhiteSpace($razao)) {
+                    [void]$literais.Add($razao)
+                    foreach ($m in [regex]::Matches($razao, '\b[a-z]+(?:\.[A-Za-z0-9*:]+){2,}\b')) {
+                        [void]$literais.Add($m.Value)
+                    }
+                }
             }
         }
         # 'evaluated' guarda o id puro (WinMonitor.Rules.psm1) — só os baldes de
@@ -484,6 +568,17 @@ function Test-WMLaudoNumbers {
         foreach ($k in @($Package.coverage.evaluated)) { [void]$literais.Add([string]$k) }
     }
     [void]$literais.Add([string]$Package.window)
+    <#
+        O NOME DA MÁQUINA, que faltava e produzia falso positivo medido.
+
+        'DESKTOP-U74QSVA' carrega o 74, e o laudo que cita a máquina pelo nome
+        era acusado de inventar esse número. Mesma classe do falso positivo do
+        'RTX 3080': conteúdo do pacote que a remoção de literais não conhecia.
+
+        Ele é identificador — mistura letra e dígito — então some inteiro sem
+        liberar nada: quem escrever "74 graus" continua sendo pego.
+    #>
+    [void]$literais.Add([string]$Package.host)
     if ($Package.previous) { [void]$literais.Add([string]$Package.previous.window) }
     # Nomes de peça, como FRASE. Ver Get-WMHardwarePhrases: '3080' sozinho não
     # entra aqui, só acompanhado, e é isso que impede o nome de virar medida.
@@ -661,7 +756,7 @@ Cada achado do seu findings precisa de TRÊS campos preenchidos: ruleId, reading
 
 Há uma conferência automática que compara o seu findings com o do pacote e rejeita o laudo inteiro nos DOIS sentidos: se você acrescentar um achado que não veio, e se você deixar de relatar um que veio. Apagar é a falha mais grave das duas — achado inventado faz alguém olhar a máquina à toa; achado apagado faz ninguém olhar. Se a rejeição disser que faltou preencher um campo, PREENCHA o campo: não remova o achado.
 
-O campo notVerified é uma LISTA, e ela tem de conter TODAS as lacunas que o pacote lista em coverage — uma entrada por regra, com o ruleId exato. Não é você que escolhe quais menciona.
+O campo notVerified é uma LISTA, e o pacote já traz a lista pronta em gapsToDeclare. Copie de lá: uma entrada para CADA item, com o mesmo ruleId, nem uma a mais nem uma a menos. Não é você que escolhe quais menciona, e não precisa deduzir nada do bloco coverage — gapsToDeclare já é a resposta.
 
 Em note, ao lado de cada id, escreva o que a falta daquela verificação significa na prática para quem lê. O que não cabe em note é dizer que a regra foi verificada, ou que está normal, ou que nada indica problema: ela está nessa lista precisamente porque NINGUÉM olhou. Afirmar o contrário ali é a pior frase que este laudo pode conter.
 
@@ -677,14 +772,27 @@ Se coverage.complete for falso, o laudo PRECISA dizer o que não foi verificado,
 OBSERVAÇÕES
 Você pode acrescentar hipóteses — correlações entre achados, causas prováveis — mas apenas no campo observations, e cada uma redigida como o palpite que é. Nunca apresente hipótese como achado.
 
-Uma hipótese é sobre um achado que existe. Se o pacote veio sem achados, observations vai vazio: não há correlação a levantar nem causa a supor. Escrever "a placa parece um pouco quente" sem nenhuma temperatura no pacote não é hipótese, é invenção com verbo no condicional — e é rejeitada igual.
+O pacote traz observationsAllowed. Se ele for FALSO, NÃO escreva o campo observations — omita-o por completo. Não é preferência de estilo: sem achado no pacote não há correlação a levantar nem causa a supor, e escrever "a placa parece um pouco quente" sem nenhuma temperatura no pacote não é hipótese, é invenção com verbo no condicional. O laudo inteiro é rejeitado por isso.
+
+Se observationsAllowed for verdadeiro, cada observação é sobre um achado que existe, redigida como o palpite que é.
 
 COMO ESCREVER
 Português do Brasil, direto, sem jargão desnecessário. Primeiro o significado, depois o número: "a placa está 8 graus mais quente sob a mesma carga" antes de "p95 de 86 °C". Uma pessoa técnica que não acompanhou nada deve entender em uma leitura. Não elogie a máquina, não tranquilize além do que o dado sustenta, e não use exclamação.
 '@
 }
 
-# Esquema da resposta. Sem 'verdict': ele é determinístico e o driver o anexa.
+<#
+    Esquema da resposta. Sem 'verdict': ele é determinístico e o driver o anexa.
+
+    'observations' e 'changedSinceLast' saíram de 'required', e isso foi medido:
+    campo obrigatório num esquema é ordem de preencher. Com observations exigido,
+    o modelo preenchia mesmo num pacote sem achados — e a guarda reprovava por
+    hipótese sobre o que ninguém mediu. O esquema empurrava para a violação que
+    a guarda pune.
+
+    Exigir a CHAVE nunca garantiu conteúdo (JSON Schema exige a chave, não o
+    preenchimento); só garantia que o modelo inventasse algo para pôr nela.
+#>
 function Get-WMLaudoSchema {
     @'
 {
@@ -705,7 +813,7 @@ function Get-WMLaudoSchema {
     "changedSinceLast": { "type": "string" },
     "observations":     { "type": "array", "items": { "type": "string" } }
   },
-  "required": ["summary","findings","notVerified","changedSinceLast","observations"],
+  "required": ["summary","findings","notVerified"],
   "additionalProperties": false
 }
 '@ | ConvertFrom-Json

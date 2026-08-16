@@ -77,7 +77,7 @@ param(
 $suites = @(
     @{ file = 'Test-Rollup.ps1';      min = 147 }
     @{ file = 'Test-Rules.ps1';       min = 148 }
-    @{ file = 'Test-Laudo.ps1';       min = 156 }
+    @{ file = 'Test-Laudo.ps1';       min = 166 }
     @{ file = 'Test-LaudoDriver.ps1'; min = 37  }
     @{ file = 'Test-Report.ps1';      min = 91  }
     @{ file = 'Test-Exam.ps1';        min = 52  }

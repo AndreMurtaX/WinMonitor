@@ -135,15 +135,16 @@
                              },
                   "ollama":  {
                                  "_comment":  [
-                                                  "mistral:latest e nao gemma3:4b por medida, nao por preferencia: em",
-                                                  "execucao real contra o pacote de 2026-08-15 (zero achados, veredito",
-                                                  "normal) o gemma3:4b inventou achados nas duas tentativas, todas as",
-                                                  "vezes. O mistral passou nas quatro conferencias. Nenhum dos dois",
-                                                  "escreve bem - o texto sai mecanico, listando identificador de regra.",
-                                                  "As guardas compram correcao, nao eloquencia; para o laudo de producao",
-                                                  "o provedor remoto continua sendo a escolha defensavel."
+                                                  "qwen2.5:7b por MEDICAO, com criterio publicado em tools\\Compare-Modelos.ps1.",
+                                                  "Contra o pacote real de 2026-08-15: gemma3:4b inventou achados em todas as",
+                                                  "tentativas de todas as execucoes; mistral:latest reprova nas quatro",
+                                                  "conferencias; qwen2.5:7b aprova na PRIMEIRA tentativa, em 9 s, sem jargao de",
+                                                  "maquina no resumo. Mesma classe de VRAM do mistral (4,7 GB contra 4,4), entao",
+                                                  "nao compete mais pela placa do que ja competia.",
+                                                  "Para o laudo de producao o provedor remoto continua sendo mais defensavel:",
+                                                  "rodar o modelo aqui poe o cerebro do monitor na peca que ele mede."
                                               ],
-                                 "model":  "mistral:latest",
+                                 "model":  "qwen2.5:7b",
                                  "endpoint":  "http://localhost:11434",
                                  "numCtx":  16384,
                                  "timeoutSec":  600

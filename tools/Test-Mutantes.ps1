@@ -132,6 +132,32 @@ $mutantes = @(
        de='function Protege { param([string]$s) [System.Security.SecurityElement]::Escape($s) }'
        para='function Protege { param([string]$s) $s }'; suite='Test-Report.ps1' }
 
+    <#
+        As quatro travas que nasceram da comparacao de modelos: o pacote passou
+        a DAR a resposta em vez de pedir deducao, e a remocao de literais passou
+        a conhecer o nome da maquina e os caminhos dentro das razoes.
+    #>
+    @{ id='BL-G';  nome='o pacote traz a lista pronta de lacunas'; arq='src\WinMonitor.Laudo.psm1'
+       de='$pacote.gapsToDeclare = @($lacunas)'; para='$pacote.gapsToDeclare = @()'; suite='Test-Laudo.ps1' }
+
+    @{ id='BL-O';  nome='o pacote diz se hipotese e permitida';    arq='src\WinMonitor.Laudo.psm1'
+       de='$pacote.observationsAllowed = (@($Findings.findings).Count -gt 0)'
+       para='$pacote.observationsAllowed = $true'; suite='Test-Laudo.ps1' }
+
+    @{ id='BL-H';  nome='o nome da maquina nao vira numero inventado'; arq='src\WinMonitor.Laudo.psm1'
+       de='[void]$literais.Add([string]$Package.host)'; para='$null = $Package'; suite='Test-Laudo.ps1' }
+
+    <#
+        A substituição não pode quebrar a sintaxe do arquivo mutado: '# removido'
+        numa linha dentro de bloco engole a chave de fechamento que vem depois,
+        a suíte morre no parse e a bateria classifica como INCONCLUSIVO. Foi o
+        que aconteceu aqui — e a classificação nova estava certa: ela recusou-se
+        a chamar de morto o que não tinha rodado.
+    #>
+    @{ id='BL-R';  nome='o caminho dentro da razao da lacuna some'; arq='src\WinMonitor.Laudo.psm1'
+       de='[void]$literais.Add($m.Value)'
+       para='$null = $m'; suite='Test-Laudo.ps1' }
+
     @{ id='BL-4b'; nome='recuo de exam.probes ausente';           arq='src\Invoke-Exam.ps1'
        de='$sondas = @($cfg.exam.probes | Where-Object { $_ -and $_.name -and $_.key })'
        para='$sondas = @($cfg.exam.probes)'; suite='Test-Exam.ps1' }

@@ -65,6 +65,46 @@ try {
     Assert-True (@($pac2.previous.ruleIds) -contains 'R-GPU-TEMP-DRIFT') 'e as regras que dispararam antes'
 
     # =====================================================================
+    Start-TestGroup 'O pacote dá a resposta pronta, não pede dedução  [MUTAÇÃO]'
+
+    <#
+        DOIS MODELOS INDEPENDENTES ERRARAM IGUAL, e isso é diagnóstico do
+        pacote, não deles.
+
+        A guarda exige que notVerified cubra TODAS as lacunas e SÓ elas. Para
+        obedecer, o modelo tinha de olhar 'coverage', entender que 'evaluated' é
+        o que FOI verificado e que os outros cinco blocos são o que NÃO foi, e
+        derivar a união. Medido: mistral e qwen2.5 listaram exatamente as regras
+        de 'evaluated' como não verificadas, e omitiram as lacunas reais.
+
+        Pedir dedução e reprovar por errar a dedução é armar a falha. O pacote
+        passa a trazer a lista pronta — e o teste confere que ela BATE com o que
+        a guarda vai cobrar, senão o pacote passaria a mentir com conveniência.
+    #>
+    $lacunasDoPacote = @($pac.gapsToDeclare | ForEach-Object { $_.ruleId })
+    Assert-Equal 1 $lacunasDoPacote.Count 'gapsToDeclare traz a lacuna do pacote de referência'
+    Assert-True ($lacunasDoPacote -contains 'R-CPU-TEMP-SPEC') 'e é a regra sem fonte'
+
+    # A lista pronta e a exigência da guarda têm de ser o MESMO conjunto.
+    $declarandoTudo = New-Data ('{"summary":"x","changedSinceLast":"","findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a placa esta mais quente","action":"acompanhar"},{"ruleId":"R-DISK-SPACE-LOW","reading":"pouco espaco livre","action":"liberar espaco"}],"notVerified":[' +
+        (($lacunasDoPacote | ForEach-Object { '{"ruleId":"' + $_ + '","note":"declarado"}' }) -join ',') + ']}')
+    Assert-True (Test-WMLaudoShape -Laudo $declarandoTudo -Package $pac).ok 'copiar gapsToDeclare satisfaz a guarda — a lista e a exigência são o mesmo conjunto'
+
+    <#
+        E a bandeira de observações, pela mesma razão: a regra "sem achado, sem
+        hipótese" exigia que o modelo olhasse findings, notasse vazio e
+        concluísse que OUTRO campo deve sumir. Os dois modelos preencheram
+        assim mesmo, mesmo com o campo fora de 'required' e a proibição escrita.
+    #>
+    Assert-True $pac.observationsAllowed 'com achados, hipótese é permitida e o pacote diz isso'
+
+    $semAchadoJson = New-Data '{"v":1,"window":"2026-08-15","host":"T","verdict":"normal","findings":[],"coverage":{"complete":false,"evaluated":[],"unsourced":{"R-CPU-TEMP-SPEC":"fonte pendente"},"malformed":{},"noData":{},"noBaseline":{},"notApplicable":{}}}'
+    $pacSemAchado = New-WMLaudoPackage -Findings $semAchadoJson
+    Assert-True (-not $pacSemAchado.observationsAllowed) 'sem achados, o pacote diz que NÃO é permitida'
+    Assert-Equal 1 (@($pacSemAchado.gapsToDeclare).Count) 'e mesmo assim lista a lacuna que precisa ser declarada'
+    Assert-Equal 'R-CPU-TEMP-SPEC' $pacSemAchado.gapsToDeclare[0].ruleId 'com o identificador exato que a guarda vai cobrar'
+
+    # =====================================================================
     Start-TestGroup 'Números permitidos'
 
     $perm = Get-WMAllowedNumbers -Package $pac
@@ -712,6 +752,35 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     $nuSint = Test-WMLaudoNumbers -Text (Get-WMLaudoText -Laudo $declarando) -Package $pacSint
     Assert-True $shSint.ok ('um laudo honesto CONSEGUE declarar a lacuna sintética: ' + ($shSint.missing -join ' ; '))
     Assert-True $nuSint.ok ('e ela não vira número inventado (órfãos: ' + ($nuSint.orphans -join ', ') + ')')
+
+    <#
+        O NOME DA MÁQUINA E OS CAMINHOS DENTRO DAS RAZÕES — dois falsos
+        positivos medidos contra o pacote real desta máquina.
+
+        'DESKTOP-U74QSVA' carrega o 74: o laudo que cita a máquina pelo nome era
+        acusado de inventar esse número. E a razão de uma lacuna é 'métrica
+        ausente ou sem medida: gpu.*.tempCByLoad.b75.p95' — o modelo é
+        instruído a relatar as lacunas, e ao copiar a razão os 75 e 95 do
+        caminho viravam invenção. Foi o último motivo de reprovação a sobrar
+        antes de um modelo local finalmente aprovar.
+    #>
+    $HOSTNUM = New-Data '{"v":1,"window":"2026-08-15","host":"DESKTOP-U74QSVA","verdict":"normal","findings":[],"coverage":{"complete":false,"evaluated":[],"unsourced":{},"malformed":{},"noData":{"R-GPU-TEMP-DRIFT":"metrica ausente ou sem medida: gpu.*.tempCByLoad.b75.p95"},"noBaseline":{},"notApplicable":{}}}'
+    $pacHost = New-WMLaudoPackage -Findings $HOSTNUM
+
+    $rr = Test-WMLaudoNumbers -Text 'A maquina DESKTOP-U74QSVA nao teve achados.' -Package $pacHost
+    Assert-True $rr.ok ('citar a máquina pelo nome não é inventar número (órfãos: ' + ($rr.orphans -join ', ') + ')')
+
+    $rr = Test-WMLaudoNumbers -Package $pacHost -Text 'A metrica gpu.*.tempCByLoad.b75.p95 esta ausente e por isso a regra nao foi avaliada.'
+    Assert-True $rr.ok ('copiar o caminho de métrica da razão da lacuna também não (órfãos: ' + ($rr.orphans -join ', ') + ')')
+
+    <#
+        E o outro lado, que é o que torna a liberação segura: o número solto da
+        PROSA da razão continua exposto. O texto do R-CPU-TEMP-SPEC contém '100
+        C atribuido a posts de comunidade'; liberá-lo devolveria à guarda o
+        buraco que quase deixou passar "a CPU chegou a 100 graus".
+    #>
+    $rr = Test-WMLaudoNumbers -Text 'A CPU chegou a 74 graus no pico.' -Package $pacHost
+    Assert-True (-not $rr.ok) '74 como MEDIDA continua sendo órfão, mesmo vindo do nome da máquina'
 
     # Espaço sobrando no ruleId não pode virar duas mensagens ilegíveis.
     $comEspaco = New-Data '{"summary":"x","changedSinceLast":"","findings":[],"observations":[],"notVerified":[{"ruleId":" R-GPU-TEMP-SPEC-3080 ","note":"n"}]}'
