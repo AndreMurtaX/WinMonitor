@@ -123,6 +123,15 @@ $mutantes = @(
        de='(Get-Content -LiteralPath ($tmpOut + ''.err'') -Raw -Encoding OEM -ErrorAction SilentlyContinue)'
        para='(Get-Content -LiteralPath ($tmpOut + ''.err'') -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)'; suite='Test-Gate.ps1' }
 
+    <#
+        O canal local monta XML. Sem escapar, um '&' vindo de nome de disco
+        quebra o documento e a notificacao some SEM ERRO - o pior desfecho para
+        um canal de aviso. A mutacao remove o escape.
+    #>
+    @{ id='BL-T';  nome='o canal local escapa XML';               arq='src\notifiers\Notify-Toast.ps1'
+       de='function Protege { param([string]$s) [System.Security.SecurityElement]::Escape($s) }'
+       para='function Protege { param([string]$s) $s }'; suite='Test-Report.ps1' }
+
     @{ id='BL-4b'; nome='recuo de exam.probes ausente';           arq='src\Invoke-Exam.ps1'
        de='$sondas = @($cfg.exam.probes | Where-Object { $_ -and $_.name -and $_.key })'
        para='$sondas = @($cfg.exam.probes)'; suite='Test-Exam.ps1' }

@@ -1,143 +1,174 @@
 {
-  "version": 1,
-
-  "patrol": {
-    "settleMs": 400,
-    "probeTimeoutSec": 8,
-    "probes": [
-      { "name": "Cpu",          "key": "cpu" },
-      { "name": "Memory",       "key": "mem" },
-      { "name": "StorageUsage", "key": "sto" },
-      { "name": "GpuNvidia",    "key": "gpu" }
-    ]
-  },
-
-  "exam": {
-    "_comment": [
-      "Cadencia lenta: uma vez por dia ou sob demanda. Consultar o log de",
-      "eventos custa ordens de grandeza mais que ler um contador CIM, e o dado",
-      "muda em escala de dias - pagar isso a cada minuto seria o monitor virando",
-      "a carga que ele deveria medir.",
-      "",
-      "missing declara as sondas que este exame AINDA NAO TEM, com o motivo.",
-      "Cada uma vira lacuna de cobertura no arquivo do exame, para que uma sonda",
-      "ausente nunca possa ser confundida com uma sonda que rodou e nao achou",
-      "nada."
-    ],
-    "_probeTimeoutSec": "Passado a toda sonda do exame, mas a sonda de eventos NAO consegue honra-lo: Get-WinEvent nao aceita tempo limite. Quem impoe prazo de verdade e o ExecutionTimeLimit da tarefa agendada. Fica dito para ninguem acreditar num teto que nao existe.",
-    "probeTimeoutSec": 30,
-    "probes": [
-      { "name": "Events", "key": "evt" }
-    ],
-    "missing": [
-      {
-        "key": "smart",
-        "reason": "SMART nao coletado: Get-StorageReliabilityCounter exige elevacao (medido: falha com 'acesso a um recurso CIM nao estava disponivel' em sessao comum). Enquanto isso, R-DISK-REALLOCATED-SECTORS fica declarada como nao verificada."
-      },
-      {
-        "key": "cpuTemp",
-        "reason": "Temperatura de CPU nao coletada: exige driver de kernel (LibreHardwareMonitor), que ainda nao foi baixado nem testado contra o antivirus desta maquina. Enquanto isso, throttling de CPU e inferido pela frequencia efetiva."
-      }
-    ]
-  },
-
-  "retention": {
-    "_comment": "Bruto por 90 dias. Medido: ~900 bytes por amostra, ~1,3 MB/dia, ~117 MB no total. Perícia vale muito mais que isso.",
-    "patrolRawDays": 90,
-    "logDays": 90
-  },
-
-  "paths": {
-    "patrol": "data\\patrol",
-    "exam": "data\\exam",
-    "rollup": "data\\rollup",
-    "baseline": "data\\baseline",
-    "findings": "data\\findings",
-    "laudo": "data\\laudo",
-    "report": "data\\report",
-    "notify": "data\\notify",
-    "logs": "logs"
-  },
-
-  "notify": {
-    "_comment": [
-      "channels: por onde o relatorio sai. 'File' sempre funciona e nao precisa",
-      "de nada configurado - mas arquivo numa maquina que voce nao esta olhando",
-      "nao notifica ninguem. 'Webhook' e o canal remoto: cobre ntfy, Discord,",
-      "Slack, Teams e endpoint proprio, e precisa de webhook.url em secrets.json.",
-      "",
-      "heartbeatDays: passados tantos dias SEM nenhuma notificacao, o relatorio",
-      "sai assim mesmo dizendo que nada mereceu atencao. Existe porque monitor",
-      "calado e indistinguivel de monitor morto: tres semanas de silencio nao",
-      "dizem se a maquina esta bem ou se o agente parou em julho.",
-      "",
-      "repeatDays: de quantos em quantos dias um achado que PERSISTE volta a",
-      "avisar. Problema que continua nao deixa de ser problema por ja ter sido",
-      "anunciado uma vez.",
-      "",
-      "blindDays: quantos dias seguidos de cobertura incompleta viram aviso,",
-      "mesmo sem nenhum achado. O veredito continua saindo 'normal', que e",
-      "verdade sobre o que foi medido e silencio sobre o que nao foi.",
-      "",
-      "staleAfterMinutes: com quanto atraso da ultima amostra a coleta e",
-      "considerada parada. Abaixo desse limite o dado e de agora; acima, o",
-      "veredito e sobre o passado e o relatorio diz isso na primeira linha."
-    ],
-    "channels": ["File"],
-    "heartbeatDays": 7,
-    "repeatDays": 1,
-    "blindDays": 3,
-    "patrolIntervalMinutes": 1,
-    "staleAfterMinutes": 30,
-    "webhook": {
-      "_comment": [
-        "bodyTemplate diz onde o texto entra. Vazio manda texto puro (ntfy).",
-        "Discord: {\"content\": \"{{text}}\"}   Slack: {\"text\": \"{{text}}\"}",
-        "titleHeader: cabecalho de assunto, se o destino usar um (ntfy: X-Title)."
-      ],
-      "bodyTemplate": "",
-      "titleHeader": "X-Title",
-      "timeoutSec": 30
-    }
-  },
-
-  "laudo": {
-    "_comment": [
-      "provider: qual provedor usar. 'ollama' e local e gratuito, bom para teste;",
-      "'claude' e remoto e nao compete por VRAM com a carga que o monitor mede -",
-      "o que importa nesta maquina, que hospeda agentes de IA na propria GPU.",
-      "maxRetries: quantas vezes reapresentar o laudo ao modelo quando a",
-      "conferencia numerica acusa fabricacao, dizendo quais numeros sobraram."
-    ],
-    "provider": "ollama",
-    "maxRetries": 1,
-    "claude": {
-      "model": "claude-opus-5",
-      "maxTokens": 16000,
-      "effort": "medium",
-      "timeoutSec": 300
-    },
-    "ollama": {
-      "_comment": [
-        "mistral:latest e nao gemma3:4b por medida, nao por preferencia: em",
-        "execucao real contra o pacote de 2026-08-15 (zero achados, veredito",
-        "normal) o gemma3:4b inventou achados nas duas tentativas, todas as",
-        "vezes. O mistral passou nas quatro conferencias. Nenhum dos dois",
-        "escreve bem - o texto sai mecanico, listando identificador de regra.",
-        "As guardas compram correcao, nao eloquencia; para o laudo de producao",
-        "o provedor remoto continua sendo a escolha defensavel."
-      ],
-      "model": "mistral:latest",
-      "endpoint": "http://localhost:11434",
-      "numCtx": 16384,
-      "timeoutSec": 600
-    }
-  },
-
-  "loadBands": [
-    { "id": "b00", "min": 0,  "max": 25 },
-    { "id": "b25", "min": 25, "max": 50 },
-    { "id": "b50", "min": 50, "max": 75 },
-    { "id": "b75", "min": 75, "max": 101 }
-  ]
+    "version":  1,
+    "patrol":  {
+                   "settleMs":  400,
+                   "probeTimeoutSec":  8,
+                   "probes":  [
+                                  {
+                                      "name":  "Cpu",
+                                      "key":  "cpu"
+                                  },
+                                  {
+                                      "name":  "Memory",
+                                      "key":  "mem"
+                                  },
+                                  {
+                                      "name":  "StorageUsage",
+                                      "key":  "sto"
+                                  },
+                                  {
+                                      "name":  "GpuNvidia",
+                                      "key":  "gpu"
+                                  }
+                              ]
+               },
+    "exam":  {
+                 "_comment":  [
+                                  "Cadencia lenta: uma vez por dia ou sob demanda. Consultar o log de",
+                                  "eventos custa ordens de grandeza mais que ler um contador CIM, e o dado",
+                                  "muda em escala de dias - pagar isso a cada minuto seria o monitor virando",
+                                  "a carga que ele deveria medir.",
+                                  "",
+                                  "missing declara as sondas que este exame AINDA NAO TEM, com o motivo.",
+                                  "Cada uma vira lacuna de cobertura no arquivo do exame, para que uma sonda",
+                                  "ausente nunca possa ser confundida com uma sonda que rodou e nao achou",
+                                  "nada."
+                              ],
+                 "_probeTimeoutSec":  "Passado a toda sonda do exame, mas a sonda de eventos NAO consegue honra-lo: Get-WinEvent nao aceita tempo limite. Quem impoe prazo de verdade e o ExecutionTimeLimit da tarefa agendada. Fica dito para ninguem acreditar num teto que nao existe.",
+                 "probeTimeoutSec":  30,
+                 "probes":  [
+                                {
+                                    "name":  "Events",
+                                    "key":  "evt"
+                                }
+                            ],
+                 "missing":  [
+                                 {
+                                     "key":  "smart",
+                                     "reason":  "SMART nao coletado: Get-StorageReliabilityCounter exige elevacao (medido: falha com \u0027acesso a um recurso CIM nao estava disponivel\u0027 em sessao comum). Enquanto isso, R-DISK-REALLOCATED-SECTORS fica declarada como nao verificada."
+                                 },
+                                 {
+                                     "key":  "cpuTemp",
+                                     "reason":  "Temperatura de CPU nao coletada: exige driver de kernel (LibreHardwareMonitor), que ainda nao foi baixado nem testado contra o antivirus desta maquina. Enquanto isso, throttling de CPU e inferido pela frequencia efetiva."
+                                 }
+                             ]
+             },
+    "retention":  {
+                      "_comment":  "Bruto por 90 dias. Medido: ~900 bytes por amostra, ~1,3 MB/dia, ~117 MB no total. Perícia vale muito mais que isso.",
+                      "patrolRawDays":  90,
+                      "logDays":  90
+                  },
+    "paths":  {
+                  "patrol":  "data\\patrol",
+                  "exam":  "data\\exam",
+                  "rollup":  "data\\rollup",
+                  "baseline":  "data\\baseline",
+                  "findings":  "data\\findings",
+                  "laudo":  "data\\laudo",
+                  "report":  "data\\report",
+                  "notify":  "data\\notify",
+                  "logs":  "logs"
+              },
+    "notify":  {
+                   "_comment":  [
+                                    "channels: por onde o relatorio sai. \u0027File\u0027 sempre funciona e nao precisa",
+                                    "de nada configurado - mas arquivo numa maquina que voce nao esta olhando",
+                                    "nao notifica ninguem. \u0027Webhook\u0027 e o canal remoto: cobre ntfy, Discord,",
+                                    "Slack, Teams e endpoint proprio, e precisa de webhook.url em secrets.json.",
+                                    "",
+                                    "heartbeatDays: passados tantos dias SEM nenhuma notificacao, o relatorio",
+                                    "sai assim mesmo dizendo que nada mereceu atencao. Existe porque monitor",
+                                    "calado e indistinguivel de monitor morto: tres semanas de silencio nao",
+                                    "dizem se a maquina esta bem ou se o agente parou em julho.",
+                                    "",
+                                    "repeatDays: de quantos em quantos dias um achado que PERSISTE volta a",
+                                    "avisar. Problema que continua nao deixa de ser problema por ja ter sido",
+                                    "anunciado uma vez.",
+                                    "",
+                                    "blindDays: quantos dias seguidos de cobertura incompleta viram aviso,",
+                                    "mesmo sem nenhum achado. O veredito continua saindo \u0027normal\u0027, que e",
+                                    "verdade sobre o que foi medido e silencio sobre o que nao foi.",
+                                    "",
+                                    "staleAfterMinutes: com quanto atraso da ultima amostra a coleta e",
+                                    "considerada parada. Abaixo desse limite o dado e de agora; acima, o",
+                                    "veredito e sobre o passado e o relatorio diz isso na primeira linha."
+                                ],
+                   "channels":  [
+                                    "File",
+                                    "Toast"
+                                ],
+                   "heartbeatDays":  7,
+                   "repeatDays":  1,
+                   "blindDays":  3,
+                   "patrolIntervalMinutes":  1,
+                   "staleAfterMinutes":  30,
+                   "webhook":  {
+                                   "_comment":  [
+                                                    "bodyTemplate diz onde o texto entra. Vazio manda texto puro (ntfy).",
+                                                    "Discord: {\"content\": \"{{text}}\"}   Slack: {\"text\": \"{{text}}\"}",
+                                                    "titleHeader: cabecalho de assunto, se o destino usar um (ntfy: X-Title)."
+                                                ],
+                                   "bodyTemplate":  "",
+                                   "titleHeader":  "X-Title",
+                                   "timeoutSec":  30
+                               },
+                   "toast":  {
+                                 "_comment":  "Canal local: notificacao nativa do Windows. Nao precisa de conta, credencial nem rede, e nao manda dado nenhum para fora. Aparece para quem esta logado na maquina - para acompanhar de longe, o canal remoto continua sendo o Webhook.",
+                                 "appId":  ""
+                             }
+               },
+    "laudo":  {
+                  "_comment":  [
+                                   "provider: qual provedor usar. \u0027ollama\u0027 e local e gratuito, bom para teste;",
+                                   "\u0027claude\u0027 e remoto e nao compete por VRAM com a carga que o monitor mede -",
+                                   "o que importa nesta maquina, que hospeda agentes de IA na propria GPU.",
+                                   "maxRetries: quantas vezes reapresentar o laudo ao modelo quando a",
+                                   "conferencia numerica acusa fabricacao, dizendo quais numeros sobraram."
+                               ],
+                  "provider":  "ollama",
+                  "maxRetries":  1,
+                  "claude":  {
+                                 "model":  "claude-opus-5",
+                                 "maxTokens":  16000,
+                                 "effort":  "medium",
+                                 "timeoutSec":  300
+                             },
+                  "ollama":  {
+                                 "_comment":  [
+                                                  "mistral:latest e nao gemma3:4b por medida, nao por preferencia: em",
+                                                  "execucao real contra o pacote de 2026-08-15 (zero achados, veredito",
+                                                  "normal) o gemma3:4b inventou achados nas duas tentativas, todas as",
+                                                  "vezes. O mistral passou nas quatro conferencias. Nenhum dos dois",
+                                                  "escreve bem - o texto sai mecanico, listando identificador de regra.",
+                                                  "As guardas compram correcao, nao eloquencia; para o laudo de producao",
+                                                  "o provedor remoto continua sendo a escolha defensavel."
+                                              ],
+                                 "model":  "mistral:latest",
+                                 "endpoint":  "http://localhost:11434",
+                                 "numCtx":  16384,
+                                 "timeoutSec":  600
+                             }
+              },
+    "loadBands":  [
+                      {
+                          "id":  "b00",
+                          "min":  0,
+                          "max":  25
+                      },
+                      {
+                          "id":  "b25",
+                          "min":  25,
+                          "max":  50
+                      },
+                      {
+                          "id":  "b50",
+                          "min":  50,
+                          "max":  75
+                      },
+                      {
+                          "id":  "b75",
+                          "min":  75,
+                          "max":  101
+                      }
+                  ]
 }

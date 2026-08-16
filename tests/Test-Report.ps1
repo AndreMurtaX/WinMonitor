@@ -430,6 +430,64 @@ try {
     Assert-True ($txt3 -match 'Sobre a coleta') 'sob um título que a distingue do alarme de coleta parada'
     Assert-True (-not ($txt3 -match 'NÃO ESTÁ SAUDÁVEL')) 'e sem chamar de doente uma coleta que está viva'
 
+    # =====================================================================
+    Start-TestGroup 'Canal local: a notificação nativa  [MUTAÇÃO]'
+
+    <#
+        O canal que não precisava de decisão nenhuma e mesmo assim ficou de fora
+        por várias sessões: a máquina avisando quem está sentado nela, sem conta,
+        sem credencial e sem mandar dado para fora.
+
+        O RISCO REAL dele é silencioso: a notificação é montada como XML, e um
+        '&' ou '<' vindo de nome de disco, caminho de métrica ou razão de lacuna
+        quebra o documento — a notificação some SEM ERRO. Para um canal de
+        aviso, sumir calado é o pior desfecho possível.
+    #>
+    $canal = Join-Path $root 'src\notifiers\Notify-Toast.ps1'
+    Assert-True (Test-Path $canal) 'o canal local existe'
+
+    $cfgToast = New-Data '{"notify":{"toast":{"appId":""}}}'
+    $relToast = [pscustomobject]@{
+        host = 'T'; window = '2026-08-15'; verdict = 'observar'; coverageComplete = $false
+        health = [pscustomobject]@{ ok = $true; reason = $null }
+        findings = @([pscustomobject]@{ severity = 'observar'; claim = 'x' })
+        decision = (New-WMNotifyDecision $true 'pulso' 'teste' @())
+    }
+    $r = & $canal -Text 'texto' -Report $relToast -Config $cfgToast
+    Assert-True $r.ok ('a notificação é apresentada: ' + $r.detail)
+
+    <#
+        E o caractere que quebra XML, vindo pelo caminho mais provável: a razão
+        da decisão, que carrega nome de regra e de disco.
+    #>
+    <#
+        O texto perigoso vai nos campos que o canal REALMENTE renderiza.
+
+        A primeira versão deste teste punha o '&' em decision.detail — que a
+        notificação não usa. O mutante sobrevivia porque a fixture não alcançava
+        o caminho: eu tinha escrito um teste que media a minha suposição sobre o
+        código, não o código.
+    #>
+    $relXml = $relToast | Select-Object *
+    $relXml.decision = New-WMNotifyDecision $true 'disco & C: <baixo>' 'detalhe' @()
+    $r2 = & $canal -Text 'texto' -Report $relXml -Config $cfgToast
+    Assert-True $r2.ok ('caractere de XML no MOTIVO não derruba a notificação: ' + $r2.detail)
+
+    $relXml2 = $relToast | Select-Object *
+    $relXml2.verdict = 'agir & <urgente>'
+    $r3 = & $canal -Text 'texto' -Report $relXml2 -Config $cfgToast
+    Assert-True $r3.ok ('nem no veredito: ' + $r3.detail)
+
+    $relXml3 = $relToast | Select-Object *
+    $relXml3.health = [pscustomobject]@{ ok = $false; reason = 'disco "WD My Passport" & C: <parou>' }
+    $r4 = & $canal -Text 'texto' -Report $relXml3 -Config $cfgToast
+    Assert-True $r4.ok ('nem na razão da coleta parada: ' + $r4.detail)
+
+    # Coleta parada muda o título, porque é a informação que precisa chegar.
+    $relParado = $relToast | Select-Object *
+    $relParado.health = [pscustomobject]@{ ok = $false; reason = 'a ronda não produz amostra há 900 min' }
+    Assert-True (& $canal -Text 'texto' -Report $relParado -Config $cfgToast).ok 'e o caminho de coleta parada também entrega'
+
     # Coleta saudável e sem ressalva não inventa seção.
     $rel4 = $rel | Select-Object *
     $rel4.health = [pscustomobject]@{ ok = $true; reason = $null }
