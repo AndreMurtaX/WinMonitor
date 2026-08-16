@@ -22,7 +22,9 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'TestKit.ps1')
 
-Import-Module (Join-Path $root 'src\WinMonitor.psm1') -Force
+Import-Module (Join-Path $root 'src\WinMonitor.psm1')        -Force
+Import-Module (Join-Path $root 'src\WinMonitor.Rollup.psm1') -Force
+Import-Module (Join-Path $root 'src\WinMonitor.Rules.psm1')  -Force
 
 $sonda = Join-Path $root 'src\probes\Probe-Events.ps1'
 
@@ -216,6 +218,18 @@ try {
     $sondaDisco = Join-Path $root 'src\probes\Probe-DiskHealth.ps1'
     $rd = & $sondaDisco
 
+    <#
+        ESTAS ASSERÇÕES DEPENDEM DA MÁQUINA, e isso está dito em vez de negado:
+        elas exigem pelo menos um disco físico visível para a conta que roda a
+        suíte. Numa VM sem disco enumerável, ou num contêiner, elas falham por
+        motivo AMBIENTAL e não por defeito do código.
+
+        Não são o teste da lógica — a lógica é medida logo abaixo, com discos
+        injetados por -Discos, inclusive o caso de ZERO disco, que é justamente
+        o que estas aqui não conseguem alcançar nesta máquina. O que elas
+        acrescentam é a ponta que injeção nenhuma cobre: que a chamada real ao
+        Windows funciona SEM elevação — a afirmação que estava em disputa.
+    #>
     Assert-True $rd.ok 'a sonda de saúde de disco roda sem elevação'
     Assert-True ($rd.data.readable -eq $true) 'e declara que conseguiu ler'
     Assert-True (@($rd.data.disks).Count -ge 1) 'com pelo menos um disco'
@@ -272,6 +286,48 @@ try {
     Assert-True ($null -eq $rf.data.disks) 'e a lista é NULA, não vazia'
     Assert-True ($null -eq $rf.data.unhealthy) 'e a contagem é NULA, não zero'
     Assert-True (-not [string]::IsNullOrWhiteSpace($rf.reason)) 'com o motivo registrado'
+
+    <#
+        E O RAMO IRMÃO: Get-PhysicalDisk respondendo SEM NENHUM disco.
+
+        Ele tem justificativa própria escrita no arquivo e não tinha teste — o
+        mutante que o desligava sobrevivia. Com ele desligado, lista vazia vira
+        'readable=true, unhealthy=0' e a regra AFIRMA máquina sã sobre um
+        subsistema que não respondeu. Alcançável de verdade: VM ou contêiner com
+        a pilha de armazenamento vazia, ou indisponibilidade transitória.
+    #>
+    $rz = & $sondaDisco -Discos @()
+    Assert-True ($rz.data.readable -eq $false) 'zero discos NÃO é leitura bem-sucedida'
+    Assert-True ($null -eq $rz.data.unhealthy) 'e a contagem é NULA, não zero: ausência não vira boa notícia'
+    Assert-True ($rz.reason -match 'nenhum disco') 'com o motivo dizendo exatamente isso'
+
+    # Caixa: 'healthy' minúsculo não pode contar como saudável.
+    $rmin = & $sondaDisco -Discos @([pscustomobject]@{ DeviceId='9'; FriendlyName='X'; MediaType='SSD'; HealthStatus='healthy'; OperationalStatus='OK' })
+    Assert-Equal 1 $rmin.data.unhealthy "'healthy' em minúsculas conta como doente: a comparação é sensível a caixa"
+
+    <#
+        A CADEIA DA REGRA, do config até o veredito — e ela não tinha defensor
+        nenhum. Três mutações independentes a desligavam com a suíte INTEIRA
+        verde: trocar a métrica na tabela, descartar a chave 'dsk' no enxerto do
+        exame, e tirar a sonda de exam.probes.
+
+        A manchete era sobre a REGRA e a defesa toda estava na SONDA.
+    #>
+    $cfgReal = Get-Content (Join-Path $root 'config\config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $sondasCfg = @($cfgReal.exam.probes | ForEach-Object { "$($_.name):$($_.key)" })
+    Assert-True ($sondasCfg -contains 'DiskHealth:dsk') 'a sonda de disco está no exame, com a chave que a regra consome'
+
+    $limiares = Get-Content (Join-Path $root 'config\thresholds.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $rdisk = @($limiares.rules | Where-Object { $_.id -eq 'R-DISK-HEALTH-DEGRADED' })
+    Assert-Equal 1 $rdisk.Count 'a regra existe na tabela'
+    Assert-Equal 'dsk.unhealthy' $rdisk[0].metric 'e aponta para a métrica que a sonda produz'
+
+    # E a ponta: a regra tem de ser EFETIVAMENTE avaliada contra o exame real.
+    $exReg = & (Join-Path $root 'src\Invoke-Exam.ps1') -PassThru -NoWrite
+    $raizRegra = [pscustomobject]@{ v = 1; day = '2026-08-16'; host = 'T' }
+    Add-Member -InputObject $raizRegra -NotePropertyName 'dsk' -NotePropertyValue $exReg.dsk -Force
+    $res = Invoke-WMRules -Rollup $raizRegra -Rules $limiares
+    Assert-True (@($res.coverage.evaluated) -contains 'R-DISK-HEALTH-DEGRADED') 'e é AVALIADA contra o dado real da sonda, não fica em lacuna'
 
     # E a granularidade que continua faltando permanece DECLARADA, não sumida.
     $exDisco = & (Join-Path $root 'src\Invoke-Exam.ps1') -PassThru -NoWrite

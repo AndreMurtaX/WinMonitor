@@ -90,10 +90,28 @@ param(
 
         -BateriaPath aponta para uma bateria sintética; -SemBateria pula por
         escolha explícita. Nenhum dos dois é usado em produção.
+
+        -MutantesMin é o PISO da bateria, pela mesma razão do piso por suíte: a
+        lista de mutantes é mantida à MÃO, e apagar entradas dela é exatamente
+        como "defesa que só existe quando alguém lembra" volta. Medido: perder
+        36 dos 37 ficava verde, porque o piso era um. Atualizado à mão — se ele
+        se ajustasse sozinho, não seria piso.
     #>
     [string]$BateriaPath,
     [switch]$SemBateria,
-    [int]$BateriaTimeoutSec = 900
+    <#
+        -SemSombra pula a varredura de sombra de parâmetro, pela mesma razão e
+        com a mesma regra do -SemBateria: os cenários de Test-Gate invocam o
+        portão dezenas de vezes, e varrer o repositório inteiro em cada uma custa
+        minutos sem medir nada de novo. Quem pula precisa DIZER que pulou.
+
+        O cenário que exercita a varredura de verdade — projeto copiado com uma
+        colisão plantada — não passa este switch. É a diferença entre pular por
+        economia e pular por conveniência.
+    #>
+    [switch]$SemSombra,
+    [int]$BateriaTimeoutSec = 2700,
+    [int]$MutantesMin = 50
 )
 
 $suites = @(
@@ -102,8 +120,8 @@ $suites = @(
     @{ file = 'Test-Laudo.ps1';       min = 170 }
     @{ file = 'Test-LaudoDriver.ps1'; min = 37  }
     @{ file = 'Test-Report.ps1';      min = 93  }
-    @{ file = 'Test-Exam.ps1';        min = 73  }
-    @{ file = 'Test-Gate.ps1';        min = 56  }
+    @{ file = 'Test-Exam.ps1';        min = 81  }
+    @{ file = 'Test-Gate.ps1';        min = 84  }
     @{ file = 'Test-Drivers.ps1';     min = 56  }
 )
 
@@ -150,6 +168,22 @@ if ($SuiteSpec) {
 
 if (@($suites).Count -eq 0) {
     Write-Error 'nenhuma suíte a executar: um portão sem suíte não aprova nada'
+    exit 2
+}
+
+<#
+    -BateriaPath É COSTURA DE AFERIÇÃO, e agora está confinado a ela.
+
+    O parâmetro aponta um arquivo qualquer e o portão o EXECUTA. Enquanto ele
+    valia em qualquer invocação, o instrumento que declara o projeto verde
+    aceitava rodar um executável arbitrário — a mesma classe de brecha que o
+    confinamento de -SuiteSpec fechou, na mesma peça, sem eu ter aplicado aqui.
+
+    Toda invocação de teste passa -SuiteDir; nenhuma invocação de produção
+    passa. É por isso que exigir os dois juntos confina sem tirar nada.
+#>
+if ($BateriaPath -and -not $SuiteDir) {
+    Write-Error '-BateriaPath só é aceito junto de -SuiteDir: é costura de aferição, não configuração do portão'
     exit 2
 }
 
@@ -332,6 +366,48 @@ $totalEsperado = 0
 foreach ($s in $suites) { $totalEsperado += [int]$s.min }
 
 <#
+    VARREDURA DE SOMBRA DE PARÂMETRO — a única armadilha que mordeu TRÊS vezes.
+
+    '$discos = $null' e o parâmetro '$Discos' são A MESMA variável: nomes em
+    PowerShell são insensíveis a caixa. A atribuição local apaga o parâmetro
+    sem erro, sem aviso, e o teste passa a medir o caminho errado.
+
+    F2 ($windowDays), F5 ($Suites) e F3 ($discos) — a terceira aconteceu com a
+    armadilha já DOCUMENTADA no repositório, na mesma sessão que citava as duas
+    anteriores. Documentar armadilha não previne armadilha; só varredura
+    mecânica previne, e só se ela rodar sem ninguém lembrar dela.
+
+    Por isso ela entra no portão em vez de ficar em tools\ esperando convite.
+#>
+$sombra = Join-Path (Split-Path -Parent $PSScriptRoot) 'tools\Find-ParamShadow.ps1'
+if ($SemSombra) {
+    ""
+    "(varredura de sombra de parâmetro PULADA: o verde abaixo não diz nada sobre parâmetro apagado)"
+} elseif (-not (Test-Path -LiteralPath $sombra)) {
+    [void]$falhas.Add('a varredura de sombra de parâmetro não existe: a armadilha que mordeu três vezes voltou a não ter guarda')
+} else {
+    ""
+    "##################  sombra de parâmetro  ##################"
+    $somOut = [System.IO.Path]::GetTempFileName()
+    $psom = Start-Process -FilePath $psExe -PassThru -NoNewWindow -Wait:$false `
+                -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $sombra `
+                -RedirectStandardOutput $somOut -RedirectStandardError ($somOut + '.err')
+    $null = $psom.Handle
+    if (-not $psom.WaitForExit(120000)) {
+        try { $psom.Kill() } catch { }
+        [void]$falhas.Add('varredura de sombra de parâmetro: estourou o prazo e foi morta')
+    } else {
+        $txtSom = (Get-Content -LiteralPath $somOut -Raw -Encoding OEM -ErrorAction SilentlyContinue) + "`n" +
+                  (Get-Content -LiteralPath ($somOut + '.err') -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+        if (-not $Quiet) { $txtSom.TrimEnd() }
+        if ($psom.ExitCode -ne 0) {
+            [void]$falhas.Add('varredura de sombra de parâmetro: há variável local colidindo com parâmetro só na caixa')
+        }
+    }
+    Remove-Item -LiteralPath $somOut, ($somOut + '.err') -Force -ErrorAction SilentlyContinue
+}
+
+<#
     A BATERIA DE MUTACAO ENTRA NO PORTAO.
 
     Ela e a regua da regua: prova que cada trava tem quem a defenda. E ficava
@@ -396,16 +472,35 @@ if ($Rapido -or $SemBateria) {
             Bateria que não declara quantos mutantes rodou não provou nada, e
             zero mutante é o caso em que "todos morreram" é vacuamente verdade.
         #>
-        $mb = [regex]::Match($saidaBat, 'TODOS OS (\d+) MUTANTES MORRERAM')
-        if (-not $mb.Success) {
+        <#
+            RESUMO ÚNICO e PISO — as duas doutrinas que faltavam, e eu tinha
+            escrito que a bateria era julgada por todas as seis. Medido: quatro.
+
+              - [regex]::Match pegava o PRIMEIRO resumo: uma bateria imprimindo
+                'TODOS OS 1' e depois 'TODOS OS 99' saía com zero.
+              - o piso era UM. Perder 36 dos 37 mutantes de uma lista mantida à
+                mão ficava verde — e "defesa que só existe quando alguém lembra"
+                é justamente o que a bateria existe para impedir.
+        #>
+        $mbs = @([regex]::Matches($saidaBat, 'TODOS OS (\d+) MUTANTES MORRERAM'))
+        if ($mbs.Count -gt 1) {
+            [void]$falhas.Add("bateria de mutação: imprimiu $($mbs.Count) resumos — não dá para saber qual é o verdadeiro")
+        } elseif ($mbs.Count -eq 0) {
             if ($codBat -eq 0) {
                 [void]$falhas.Add('bateria de mutação: saiu com zero mas não declarou quantos mutantes morreram')
             }
         } else {
-            $qtd = [int]$mb.Groups[1].Value
+            $qtd = [int]$mbs[0].Groups[1].Value
             $mortos = @([regex]::Matches($saidaBat, '(?m)^\s+morto\s')).Count
+            <#
+                ZERO é uma falha DIFERENTE de "a lista encolheu", e por isso tem
+                mensagem própria: com zero mutantes, "todos morreram" é vacuamente
+                verdadeiro — a bateria não provou nada, nem pouco.
+            #>
             if ($qtd -lt 1) {
-                [void]$falhas.Add('bateria de mutação: declarou ZERO mutantes — bateria vazia não prova defesa nenhuma')
+                [void]$falhas.Add('bateria de mutação: declarou ZERO mutantes — "todos morreram" é vacuamente verdadeiro e não prova nada')
+            } elseif ($qtd -lt $MutantesMin) {
+                [void]$falhas.Add("bateria de mutação: declarou $qtd mutante(s), o piso é $MutantesMin — a lista encolheu")
             }
             if ($mortos -ne $qtd) {
                 [void]$falhas.Add("bateria de mutação: diz $qtd mortos e imprimiu $mortos linha(s) de mutante — o resumo não bate com o que rodou")

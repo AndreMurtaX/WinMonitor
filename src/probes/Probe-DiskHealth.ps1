@@ -30,6 +30,18 @@
     A lacuna de granularidade continua declarada em exam.missing. Cobrir o
     degrau de baixo não pode virar pretexto para calar o de cima.
 #>
+<#
+    A ASSINATURA SO DECLARA O QUE E USADO.
+
+    Havia aqui '-TimeoutSec = 30' anunciando um prazo que o corpo nao aplica -
+    limite que nao limita e pior que limite nenhum, doutrina deste projeto - e
+    um '-Facts' cujo default chamava Get-WMHostFacts, que GRAVA data\host.json.
+    Codigo morto COM efeito colateral, no arquivo cuja doutrina irma diz que
+    codigo morto com cara de defesa e pior que defesa nenhuma.
+
+    O contrato de sonda passa os tres por nome; parametro declarado e ignorado
+    e mais honesto que parametro que finge fazer algo.
+#>
 param(
     $Facts,
     [int]$TimeoutSec = 30,
@@ -48,7 +60,10 @@ param(
     [switch]$Falhar
 )
 
-if ($null -eq $Facts) { $Facts = Get-WMHostFacts }
+# -Facts NÃO é usado por esta sonda, e o default deliberadamente NÃO chama
+# Get-WMHostFacts: a chamada gravava data\host.json como efeito colateral de um
+# parâmetro morto — escrita a partir de código que ninguém lê.
+$null = $Facts, $TimeoutSec, $WindowDays
 
 try {
     <#
@@ -98,7 +113,10 @@ try {
             é contado como doente. Errar para o lado de perguntar é barato;
             errar para o lado de calar é o que este projeto não faz.
         #>
-        $ok = ($saude -eq 'Healthy')
+        # -ceq, nao -eq: o operador insensivel a caixa aceitava 'healthy'
+        # minusculo como saudavel, contra o que o comentario acima promete.
+        # Improvavel vindo da API do Windows, mas a promessa passa a valer.
+        $ok = ($saude -ceq 'Healthy')
         if (-not $ok) { $doentes++ }
 
         [void]$lista.Add([ordered]@{

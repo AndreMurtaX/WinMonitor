@@ -134,11 +134,54 @@ Ver o pacote exato que o modelo receberia, sem chamar modelo nenhum:
 .\src\Invoke-Laudo.ps1 -DryRun
 ```
 
-Rodar todos os testes:
+Rodar o portão — todas as suítes, a varredura de sombra de parâmetro e a
+bateria de mutação:
 
 ```powershell
 .\tests\Run-All.ps1
 ```
+
+Sem a bateria, que recopia o projeto uma vez por mutante e leva minutos:
+
+```powershell
+.\tests\Run-All.ps1 -Rapido
+```
+
+---
+
+## O que o portão confere, além de "os testes passaram"
+
+Este projeto teve dez verificações adversariais, e nenhuma voltou vazia. O
+padrão que elas expuseram não foi código errado — foi **verde que não
+significava nada**. Cada trava abaixo nasceu de um caso medido em que o portão
+aprovava algo que não devia:
+
+| Trava | O caso que a gerou |
+|---|---|
+| Execução isolada por suíte | `$LASTEXITCODE` guardava o zero da suíte anterior: 135 testes que nunca rodaram saíram como "passaram" |
+| Piso por suíte, mantido à mão | suíte esvaziada continuava verde |
+| Resumo obrigatório, único e conferido contra as linhas impressas | suíte que imprime o resumo sem rodar teste nenhum |
+| Varredura do diretório | apagar uma linha da lista sumia com uma suíte inteira |
+| Prazo por suíte, no conjunto e na bateria | a bateria rodava fora de todo teto: 93 s depois do teto global de 1 s |
+| A bateria julgada pelas mesmas doutrinas | bateria muda, com zero mutantes, ou anunciando trava indefesa e saindo com zero: as três passavam |
+| Varredura de sombra de parâmetro | `$discos = $null` apagava o parâmetro `$Discos` — a mesma armadilha três vezes |
+
+A **bateria de mutação** (`tools\Test-Mutantes.ps1`) é a régua da régua: cada
+entrada reverte uma correção numa cópia do projeto e roda a suíte que deveria
+defendê-la. Verde depois da reversão significa trava indefesa. Na primeira
+aplicação, contra dez correções que eu daria por prontas, **cinco mutantes
+sobreviveram**.
+
+A **varredura de sombra** (`tools\Find-ParamShadow.ps1`) existe porque nomes de
+variável em PowerShell são insensíveis a caixa: `$discos = $null` e o parâmetro
+`$Discos` são a mesma variável, e a atribuição local apaga o parâmetro sem erro
+e sem aviso. Isso aconteceu três vezes — a terceira com a armadilha já
+documentada no repositório. Documentar armadilha não previne armadilha.
+
+E o que nenhuma delas pega, dito em vez de negado: **teste que virou vácuo**.
+Vinte `Assert-True $true` imprimem vinte linhas legítimas e nenhuma contagem os
+separa de vinte testes de verdade. Só leitura humana e verificação adversarial
+separam.
 
 ---
 

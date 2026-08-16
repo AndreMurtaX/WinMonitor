@@ -204,14 +204,97 @@ $mutantes = @(
         degrau que o Windows usa justamente para avisar antes de desistir.
     #>
     @{ id='BL-D1';  nome='so Healthy conta como saudavel';        arq='src\probes\Probe-DiskHealth.ps1'
-       de='$ok = ($saude -eq ''Healthy'')'; para='$ok = ($saude -ne ''Unhealthy'')'; suite='Test-Exam.ps1' }
+       de='$ok = ($saude -ceq ''Healthy'')'; para='$ok = ($saude -cne ''Unhealthy'')'; suite='Test-Exam.ps1' }
 
     @{ id='BL-D2';  nome='sonda de disco que falha devolve NULO'; arq='src\probes\Probe-DiskHealth.ps1'
        de='disks    = $null'; para='disks    = @()'; suite='Test-Exam.ps1' }
 
+    <#
+        -ceq E NAO -eq: '-eq' e insensivel a caixa, entao 'healthy' minusculo
+        passava por saudavel. Nao e preciosismo - HealthStatus chega como texto
+        de fonte externa, e "aceito qualquer caixa" e como um valor que eu nao
+        reconheco vira aprovacao silenciosa.
+    #>
+    @{ id='BL-D3';  nome='saude de disco compara com caixa';      arq='src\probes\Probe-DiskHealth.ps1'
+       de='$ok = ($saude -ceq ''Healthy'')'; para='$ok = ($saude -eq ''Healthy'')'; suite='Test-Exam.ps1' }
+
+    <#
+        ZERO DISCO NAO E ZERO DOENTE. Sem este ramo, a maquina que nao devolve
+        disco nenhum sai com unhealthy=0 - a leitura mais tranquilizadora
+        possivel para a situacao em que nada foi lido.
+    #>
+    @{ id='BL-D4';  nome='zero disco lido nao vira zero doente';  arq='src\probes\Probe-DiskHealth.ps1'
+       de='if ($lidos.Count -eq 0) {'; para='if ($false) {'; suite='Test-Exam.ps1' }
+
+    <#
+        A CADEIA DA REGRA, ponta a ponta: sonda registrada no exame, regra
+        apontando para a chave que a sonda escreve, motor avaliando. Cada elo
+        sozinho passa com o vizinho quebrado - foi assim que a regra de disco
+        ficou tres fases declarada e nunca avaliada.
+    #>
+    @{ id='BL-X1';  nome='a sonda de disco esta no exame';        arq='config\config.json'
+       de='"name":  "DiskHealth",'; para='"name":  "DiskHealthX",'; suite='Test-Exam.ps1' }
+
+    @{ id='BL-X3';  nome='a regra le a chave que a sonda escreve'; arq='config\thresholds.json'
+       de='"metric":  "dsk.unhealthy",'; para='"metric":  "dsk.doentes",'; suite='Test-Exam.ps1' }
+
     @{ id='A5';    nome='regra malformada conta como lacuna';     arq='src\WinMonitor.Rules.psm1'
        de='$lacunas = $semFonte.Count + $malformadas.Count + $semDado.Count'
        para='$lacunas = $semFonte.Count + $semDado.Count'; suite='Test-Rules.ps1' }
+
+    <#
+        AS TRAVAS DA DECIMA RODADA. Todas nasceram de defeitos que o portao
+        deixava passar VERDE, e por isso todas apontam para o portao ou para a
+        propria bateria: o instrumento de medida errando e a categoria de erro
+        que nenhuma outra trava pega.
+    #>
+    @{ id='BL-94a'; nome='dois resumos de bateria nao sao um';    arq='tests\Run-All.ps1'
+       de='if ($mbs.Count -gt 1) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
+
+    @{ id='BL-94b'; nome='o piso de mutantes vale';               arq='tests\Run-All.ps1'
+       de='} elseif ($qtd -lt $MutantesMin) {'; para='} elseif ($false) {'; suite='Test-Gate.ps1' }
+
+    <#
+        A propria bateria: silencio nao e morte. Este mutante roda dentro do
+        sandbox que copia 'tools', e Test-Gate executa a bateria MUTADA contra
+        um mutante cuja suite nao existe. Sem o ramo, ela anuncia sucesso sobre
+        o que nao rodou.
+    #>
+    @{ id='BL-96a'; nome='suite que nao roda e INCONCLUSIVO';     arq='tools\Test-Mutantes.ps1'
+       de='if ([string]::IsNullOrWhiteSpace($linha)) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
+
+    @{ id='BL-96b'; nome='inconclusivo conta no veredito final';  arq='tools\Test-Mutantes.ps1'
+       de='if ($vivos.Count -eq 0 -and $naoAplic.Count -eq 0 -and $inconclusivos.Count -eq 0) {'
+       para='if ($vivos.Count -eq 0 -and $naoAplic.Count -eq 0) {'; suite='Test-Gate.ps1' }
+
+    <#
+        A VARREDURA DE SOMBRA DE PARAMETRO, e ela entra COM os mutantes que a
+        atacam - a primeira versao dela nasceu morta por usar '-eq', que e
+        insensivel a caixa e descartava exatamente o que ela procurava.
+
+        BL-97a reverte para '-eq': a varredura deixa de acusar qualquer coisa.
+        BL-97b apaga o descarte legitimo: ela acusa reatribuicao normal e vira
+        ruido, que e o outro jeito de uma varredura morrer.
+    #>
+    @{ id='BL-97a'; nome='a varredura compara com caixa';         arq='tools\Find-ParamShadow.ps1'
+       de='if (($nomeV -ceq $nomeP)) { continue }'; para='if (($nomeV -eq $nomeP)) { continue }'; suite='Test-Gate.ps1' }
+
+    @{ id='BL-97b'; nome='mesma grafia nao e colisao';            arq='tools\Find-ParamShadow.ps1'
+       de='if (($nomeV -ceq $nomeP)) { continue }'; para='if ($false) { continue }'; suite='Test-Gate.ps1' }
+
+    <#
+        O terceiro jeito de a varredura morrer: acusar o que e legitimo. Sem o
+        recuo, o escopo do script engole os corpos das funcoes e '$discos = 1'
+        DENTRO de uma funcao vira colisao - e nao e: ali nasce variavel nova.
+    #>
+    @{ id='BL-97d'; nome='o escopo do script para na funcao';     arq='tools\Find-ParamShadow.ps1'
+       de='if ($dentroDeFuncao) { continue }'; para='if ($false) { continue }'; suite='Test-Gate.ps1' }
+
+    @{ id='BL-97c'; nome='o portao reprova por sombra';           arq='tests\Run-All.ps1'
+       de='if ($psom.ExitCode -ne 0) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
+
+    @{ id='BL-98';  nome='-BateriaPath confinado a afericao';     arq='tests\Run-All.ps1'
+       de='if ($BateriaPath -and -not $SuiteDir) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
 
     @{ id='BL-4b'; nome='recuo de exam.probes ausente';           arq='src\Invoke-Exam.ps1'
        de='$sondas = @($cfg.exam.probes | Where-Object { $_ -and $_.name -and $_.key })'

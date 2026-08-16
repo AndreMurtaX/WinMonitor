@@ -65,9 +65,37 @@ function Invoke-Portao {
     #>
     $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $txt = & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $portao `
-                -SuiteDir $Dir -SuiteSpec $spec -SuiteTimeoutSec $TimeoutSec -SemBateria `
+                -SuiteDir $Dir -SuiteSpec $spec -SuiteTimeoutSec $TimeoutSec -SemBateria -SemSombra `
                 -TotalTimeoutSec $TotalSec -Quiet 2>&1 | Out-String
     [pscustomobject]@{ text = $txt; aprovou = ($txt -match 'TODAS AS SUITES PASSARAM') }
+}
+
+<#
+    Invoca o portão com uma lista crua de argumentos, lendo stdout E stderr de
+    ARQUIVO.
+
+    Existe separado de Invoke-Portao porque os cenários de validação de
+    parâmetro fazem o portão chamar Write-Error, e stderr de comando nativo sob
+    $ErrorActionPreference='Stop' derruba ESTA suíte — a mesma armadilha que já
+    tinha posto sete asserções no vácuo neste arquivo.
+
+    O parâmetro NÃO se chama $Args: esse é nome automático do PowerShell, e a
+    varredura de sombra existe justamente porque colisão de nome não avisa.
+#>
+function Invoke-PortaoArgs {
+    param([string[]]$Argumentos)
+    $psE = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $o = [System.IO.Path]::GetTempFileName()
+    $p = Start-Process -FilePath $psE -PassThru -NoNewWindow -Wait:$false `
+             -ArgumentList (@('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $portao) + $Argumentos) `
+             -RedirectStandardOutput $o -RedirectStandardError ($o + '.err')
+    $null = $p.Handle
+    $fim = $p.WaitForExit(300000)
+    $cod = if ($fim) { $p.ExitCode } else { try { $p.Kill() } catch { }; -1 }
+    $t = [string](Get-Content -LiteralPath $o -Raw -Encoding OEM -ErrorAction SilentlyContinue) + "`n" +
+         [string](Get-Content -LiteralPath ($o + '.err') -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+    Remove-Item -LiteralPath $o, ($o + '.err') -Force -ErrorAction SilentlyContinue
+    [pscustomobject]@{ text = $t; codigo = $cod; aprovou = ($t -match 'TODAS AS SUITES PASSARAM') }
 }
 
 <#
@@ -122,6 +150,13 @@ try {
     $d = New-Cenario @((Suite-ComFalha 'Test-A.ps1' 10 2 0))
     $r = Invoke-Portao -Dir $d -Lista @(@{file='Test-A.ps1';min=10})
     Assert-True (-not $r.aprovou) 'suíte que sai 0 COM falhas reprova'
+    <#
+        E PELO MOTIVO CERTO. "Reprovou" sozinho não distingue a trava que este
+        cenário mede de qualquer outra que dispare junto — o cenário passaria
+        igual se a suíte estivesse sendo pega pelo piso, pela varredura ou pelo
+        prazo, e a trava real ficaria indefesa com aparência de coberta.
+    #>
+    Assert-True ($r.text -match 'teste\(s\) falharam') 'e o motivo é a falha declarada, não outra trava qualquer'
 
     <#
         CÓDIGO DE SAÍDA. A conferência de código != 0 não tinha teste — a
@@ -183,6 +218,7 @@ try {
     $d = New-Cenario @(@{ file = 'Test-A.ps1'; body = "'   ok    um so'`r`n'  10 passou, 0 falhou'`r`nexit 0`r`n" })
     $r = Invoke-Portao -Dir $d -Lista @(@{file='Test-A.ps1';min=10})
     Assert-True (-not $r.aprovou) 'resumo que infla a contagem reprova'
+    Assert-True ($r.text -match 'não bate com o que rodou') 'e o motivo é o resumo inflado, não o piso'
 
     <#
         5. O TETO GLOBAL DE TEMPO. Ele era derivado do prazo por suíte —
@@ -209,19 +245,68 @@ try {
         existe para não ter, dentro do próprio instrumento de medida.
     #>
     <#
-        try/catch obrigatório: o portão usa Write-Error para spec ilegível, e
-        stderr de comando nativo sob $ErrorActionPreference='Stop' derruba ESTA
-        suíte — que então morre sem imprimir resumo, e o portão de fora acusa
-        "não chegou ao fim". Diagnóstico certo para o sintoma errado, de novo.
+        O try/catch COM '2>&1 | Out-String' PUNHA SETE ASSERÇÕES EM VÁCUO.
+
+        Sob $ErrorActionPreference='Stop', o primeiro registro de stderr de um
+        comando nativo é terminante: o pipeline morre, o STDOUT INTEIRO é
+        descartado, e o catch devolve só a primeira linha do erro. Como nestes
+        cenários o portão sempre escreve em stderr, toda asserção da forma
+        'não aprova' passava a ser impossível de falhar — inclusive a de
+        SEGURANÇA, que confere que o arquivo de fora do diretório não foi
+        executado.
+
+        Provado: um filho que imprime 'TODAS AS SUITES PASSARAM' no stdout E
+        escreve em stderr fazia a asserção devolver verdadeiro.
+
+        E a mesma causa produzia reprovação dependente do CAMINHO: o PowerShell
+        quebra a linha de erro em 120 colunas, então com o repositório num
+        caminho longo a mensagem cai na segunda linha e some do texto capturado.
+        Mesmo commit, 56/0 em C:\curto e 48/8 no caminho longo — vermelho por
+        motivo nenhum, que é o que este projeto identifica como a causa de
+        alguém desligar o portão.
+
+        A correção é a mesma que o portão já usa para as suítes: processo com
+        saída redirecionada para arquivo. Nada de pipeline, nada de EAP.
     #>
     function Invoke-Spec {
         param([string]$Dir, [string]$Spec)
         $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $out = [System.IO.Path]::GetTempFileName()
         try {
-            (& $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $portao `
-                 -SuiteDir $Dir -SuiteSpec $Spec -SemBateria -Quiet 2>&1 | Out-String)
-        } catch { [string]$_ }
+            $p = Start-Process -FilePath $psExe -PassThru -NoNewWindow -Wait:$false `
+                     -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $portao,
+                                   '-SuiteDir', $Dir, '-SuiteSpec', $Spec, '-SemBateria', '-Quiet' `
+                     -RedirectStandardOutput $out -RedirectStandardError ($out + '.err')
+            $null = $p.Handle
+            [void]$p.WaitForExit(120000)
+            (Get-Content -LiteralPath $out -Raw -Encoding OEM -ErrorAction SilentlyContinue) + "`n" +
+            (Get-Content -LiteralPath ($out + '.err') -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+        } finally {
+            Remove-Item -LiteralPath $out, ($out + '.err') -Force -ErrorAction SilentlyContinue
+        }
     }
+
+    <#
+        E a prova de que a captura não é mais vácuo: um filho que imprime a
+        linha de aprovação E escreve em stderr tem de aparecer INTEIRO. Sem
+        esta asserção, as sete abaixo voltam a não poder falhar sem que nada
+        acuse.
+    #>
+    $dVac = New-Cenario @((Suite-Ok 'Test-A.ps1' 3))
+    $fakeVac = Join-Path $dVac 'Fake.ps1'
+    [System.IO.File]::WriteAllText($fakeVac, "'TODAS AS SUITES PASSARAM'`r`n[Console]::Error.WriteLine('erro qualquer')`r`nexit 1`r`n", $enc)
+    $psV = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $outV = [System.IO.Path]::GetTempFileName()
+    $pv = Start-Process -FilePath $psV -PassThru -NoNewWindow -Wait:$false `
+              -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $fakeVac `
+              -RedirectStandardOutput $outV -RedirectStandardError ($outV + '.err')
+    $null = $pv.Handle; [void]$pv.WaitForExit(30000)
+    $txtV = (Get-Content -LiteralPath $outV -Raw -Encoding OEM -ErrorAction SilentlyContinue) + "`n" +
+            (Get-Content -LiteralPath ($outV + '.err') -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+    Remove-Item -LiteralPath $outV, ($outV + '.err') -Force -ErrorAction SilentlyContinue
+
+    Assert-True ($txtV -match 'TODAS AS SUITES PASSARAM') 'o stdout sobrevive ao stderr: a captura não é vácuo'
+    Assert-True ($txtV -match 'erro qualquer') 'e o stderr também chega'
 
     <#
         A ASSERÇÃO CONFERE QUAL TRAVA DISPAROU, não só que reprovou.
@@ -326,14 +411,19 @@ try {
         que toda trava tem defensor.
     #>
     function Invoke-ComBateria {
-        param([string]$Corpo, [int]$PrazoBateria = 60)
+        param([string]$Corpo, [int]$PrazoBateria = 60, [int]$Piso = 1)
         $d = New-Cenario @((Suite-Ok 'Test-A.ps1' 3))
         $fake = Join-Path $d '_bateria.ps1'
         [System.IO.File]::WriteAllText($fake, $Corpo, $enc)
         $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        <#
+            -MutantesMin 1: o piso de produção é a lista real de mutantes, e uma
+            bateria sintética de um mutante esbarraria nele por um motivo que não
+            é o que estes cenários medem. O piso tem cenário próprio, abaixo.
+        #>
         $txt = & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $portao `
                    -SuiteDir $d -SuiteSpec 'Test-A.ps1:3' -BateriaPath $fake `
-                   -BateriaTimeoutSec $PrazoBateria -Quiet 2>&1 | Out-String
+                   -BateriaTimeoutSec $PrazoBateria -MutantesMin $Piso -SemSombra -Quiet 2>&1 | Out-String
         [pscustomobject]@{ text = $txt; aprovou = ($txt -match 'TODAS AS SUITES PASSARAM') }
     }
 
@@ -342,6 +432,7 @@ try {
 
     $r = Invoke-ComBateria "'  VIVO   X'`r`n'1 trava(s) indefesa(s)'`r`nexit 1`r`n"
     Assert-True (-not $r.aprovou) 'bateria que acusa trava indefesa reprova o portão'
+    Assert-True ($r.text -match 'trava indefesa ou inconclusiva') 'e o motivo é o veredito dela, não outra conferência'
 
     <#
         Os três casos que passavam. Cada um é a bateria não tendo provado nada.
@@ -358,10 +449,45 @@ try {
     Assert-True (-not $r.aprovou) 'bateria que infla a contagem reprova, como qualquer suíte'
     Assert-True ($r.text -match 'não bate com o que rodou') 'e pelo mesmo motivo'
 
+    <#
+        O PISO DA LISTA DE MUTANTES. Ela é mantida à MÃO, e apagar entradas é
+        exatamente como "defesa que só existe quando alguém lembra" volta.
+        Medido antes do piso: perder 36 dos 37 mutantes ficava verde.
+
+        O cenário roda uma bateria honesta de 3 mutantes contra um piso de 5.
+        Nada nela está errado — o que está errado é ela ter encolhido.
+    #>
+    $corpo3 = "'  morto  A'`r`n'  morto  B'`r`n'  morto  C'`r`n'TODOS OS 3 MUTANTES MORRERAM'`r`nexit 0`r`n"
+    $r = Invoke-ComBateria $corpo3 -Piso 5
+    Assert-True (-not $r.aprovou) 'bateria honesta que ENCOLHEU abaixo do piso reprova'
+    Assert-True ($r.text -match 'a lista encolheu') 'e o motivo diz que a lista encolheu'
+
+    $r = Invoke-ComBateria $corpo3 -Piso 3
+    Assert-True $r.aprovou 'e a mesma bateria no piso exato aprova: o piso é piso, não igualdade'
+
+    <#
+        RESUMO ÚNICO. [regex]::Match pegava o PRIMEIRO resumo, então uma bateria
+        que imprimisse 'TODOS OS 1' e depois 'TODOS OS 99' saía aprovada pela
+        primeira linha — o instrumento lendo só o começo do que mediu.
+    #>
+    $r = Invoke-ComBateria "'  morto  A'`r`n'TODOS OS 1 MUTANTES MORRERAM'`r`n'TODOS OS 99 MUTANTES MORRERAM'`r`nexit 0`r`n"
+    Assert-True (-not $r.aprovou) 'bateria com DOIS resumos reprova: não dá para saber qual vale'
+    Assert-True ($r.text -match 'resumos') 'e o motivo nomeia isso'
+
     # A bateria também tem prazo — antes rodava fora de todo teto do portão.
     $r = Invoke-ComBateria "Start-Sleep -Seconds 30`r`n'TODOS OS 1 MUTANTES MORRERAM'`r`nexit 0`r`n" -PrazoBateria 2
     Assert-True (-not $r.aprovou) 'bateria que trava reprova por prazo'
     Assert-True ($r.text -match 'prazo') 'e o motivo nomeia o prazo'
+
+    <#
+        -BateriaPath É COSTURA, e costura tem de ficar confinada à aferição.
+        Solto, ele fazia o portão executar um arquivo arbitrário — a brecha que
+        o confinamento de -SuiteSpec já tinha fechado na mesma peça.
+    #>
+    $rConf = Invoke-PortaoArgs @('-SuiteSpec', 'Test-A.ps1:1', '-BateriaPath', (Join-Path $tmp 'nao-existe.ps1'), '-SemSombra', '-Quiet')
+    Assert-True ($rConf.text -match 'aceito junto de -SuiteDir') '-BateriaPath sem -SuiteDir é recusado na entrada'
+    Assert-True (-not $rConf.aprovou) 'e nada é executado'
+    Assert-Equal 2 $rConf.codigo 'com código de erro de uso, não de suíte reprovada'
 
     # Bateria ausente é vermelho: sem ela, nada prova que as travas têm defensor.
     $d = New-Cenario @((Suite-Ok 'Test-A.ps1' 3))
@@ -422,7 +548,162 @@ try {
     Assert-Equal 1 $linhaCopia.Count 'há exatamente um laço de cópia no sandbox da bateria'
     Assert-True ($linhaCopia[0] -match "'tools'") 'e ele copia tools: a bateria pode ser mutada como qualquer outra peça'
 
-    Assert-True (([System.IO.File]::ReadAllText($bateria)) -match 'INCONCLUSIVO') 'e silêncio continua sendo inconclusivo, não morte'
+    <#
+        SILÊNCIO É INCONCLUSIVO — conferido por COMPORTAMENTO, não por texto.
+
+        A asserção anterior lia o arquivo inteiro procurando 'INCONCLUSIVO'. A
+        palavra ocorre quatro vezes ali, três delas em COMENTÁRIO — duas
+        escritas pelo mesmo commit que criou a asserção. Apagando todo o código,
+        ela continuava verde: o teste encontrava a evidência no lugar errado.
+
+        É o defeito que eu diagnostiquei e corrigi para a asserção vizinha, cinco
+        linhas acima, e não apliquei a esta.
+
+        Agora a bateria é EXECUTADA contra um mutante cuja suíte declarada não
+        existe — o caso em que nada roda. Ela tem de dizer inconclusivo e sair
+        com código diferente de zero.
+    #>
+    $dInc = New-Cenario @((Suite-Ok 'Test-A.ps1' 1))
+    $batInc = Join-Path $dInc 'bateria-inconclusiva.ps1'
+    $projInc = Join-Path $dInc 'proj'
+    New-Item -ItemType Directory -Path $projInc -Force | Out-Null
+    foreach ($sub in 'src', 'config', 'tests', 'tools') {
+        Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) $sub) -Destination $projInc -Recurse -Force
+    }
+    # Um mutante que aponta para uma suíte inexistente: nada roda.
+    $bat2 = Join-Path $projInc 'tools\Test-Mutantes.ps1'
+    $srcBat = [System.IO.File]::ReadAllText($bat2)
+    $srcBat = $srcBat -replace "suite='Test-Laudo\.ps1' \}", "suite='Test-Nao-Existe.ps1' }"
+    [System.IO.File]::WriteAllText($bat2, $srcBat, $enc)
+
+    $outI = [System.IO.Path]::GetTempFileName()
+    $pi = Start-Process -FilePath $psExe -PassThru -NoNewWindow -Wait:$false `
+              -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $bat2, '-Somente', 'BL-1a' `
+              -RedirectStandardOutput $outI -RedirectStandardError ($outI + '.err')
+    $null = $pi.Handle
+    $terminou = $pi.WaitForExit(180000)
+    $codI = if ($terminou) { $pi.ExitCode } else { try { $pi.Kill() } catch { }; -1 }
+    $txtI = (Get-Content -LiteralPath $outI -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+    Remove-Item -LiteralPath $outI, ($outI + '.err') -Force -ErrorAction SilentlyContinue
+
+    Assert-True ($txtI -match 'INCONCLUSIVO') 'suíte que não roda é INCONCLUSIVO, não morte — conferido executando'
+    Assert-True ($codI -ne 0) 'e a bateria sai com código diferente de zero'
+    Assert-True (-not ($txtI -match 'TODOS OS \d+ MUTANTES MORRERAM')) 'sem anunciar sucesso'
+
+    # =====================================================================
+    Start-TestGroup 'Sombra de parâmetro: a armadilha que mordeu três vezes  [MUTAÇÃO]'
+
+    <#
+        A DEFESA MECÂNICA, E ELA MESMA ATACADA ANTES DE SER DECLARADA PRONTA.
+
+        '$discos = $null' e o parâmetro '$Discos' são A MESMA variável — nomes em
+        PowerShell são insensíveis a caixa. F2, F5 e F3 caíram nisso; a terceira
+        com a armadilha JÁ escrita no repositório, na mesma sessão que citava as
+        duas anteriores.
+
+        A primeira versão da varredura descartava colisões com '-eq', que é
+        insensível a caixa: ela descartava exatamente o que procurava e nascia
+        MORTA, limpa contra as duas sabotagens históricas. É o motivo destes
+        testes existirem em vez de um "conferi à mão" no comentário.
+    #>
+    $sombra = Join-Path (Split-Path -Parent $PSScriptRoot) 'tools\Find-ParamShadow.ps1'
+    Assert-True (Test-Path $sombra) 'a varredura de sombra de parâmetro existe'
+
+    function Invoke-Sombra {
+        param([string]$Corpo)
+        $script:cenSeq++
+        $d = Join-Path $tmp ("sombra{0}" -f $script:cenSeq)
+        New-Item -ItemType Directory -Path $d -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $d 'Alvo.ps1'), $Corpo, $enc)
+        $o = [System.IO.Path]::GetTempFileName()
+        $p = Start-Process -FilePath $psExe -PassThru -NoNewWindow -Wait:$false `
+                 -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $sombra, '-Caminho', $d `
+                 -RedirectStandardOutput $o -RedirectStandardError ($o + '.err')
+        $null = $p.Handle
+        $fim = $p.WaitForExit(60000)
+        $cod = if ($fim) { $p.ExitCode } else { try { $p.Kill() } catch { }; -1 }
+        $t = (Get-Content -LiteralPath $o -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+        Remove-Item -LiteralPath $o, ($o + '.err') -Force -ErrorAction SilentlyContinue
+        [pscustomobject]@{ texto = [string]$t; codigo = $cod }
+    }
+
+    # A colisão real, na forma exata em que ela apareceu três vezes.
+    $r = Invoke-Sombra "param([object]`$Discos)`r`n`$discos = `$null`r`n`$discos = @(`$Discos)`r`n"
+    Assert-True ($r.codigo -ne 0) 'variável local que difere do parâmetro só na caixa é acusada'
+    Assert-True ($r.texto -match '\$discos colide com o parâmetro \$Discos') 'e a acusação nomeia as duas'
+
+    # Dentro de função também: o escopo do param() é o corpo dela.
+    $r = Invoke-Sombra "function F {`r`n  param([int]`$WindowDays)`r`n  `$windowDays = 1`r`n  `$windowDays`r`n}`r`n"
+    Assert-True ($r.codigo -ne 0) 'a colisão dentro de função também é acusada'
+    Assert-True ($r.texto -match 'F:') 'e o relatório diz em qual função'
+
+    <#
+        E O FALSO POSITIVO, que é o que torna a varredura utilizável: reatribuir
+        o parâmetro com a MESMA grafia é legítimo e frequente. Sem esta asserção
+        a varredura poderia acusar tudo e continuar "verde" no teste acima.
+    #>
+    $r = Invoke-Sombra "param([object]`$Alvo)`r`n`$Alvo = @(`$Alvo)`r`n`$Alvo`r`n"
+    Assert-Equal 0 $r.codigo 'reatribuir o parâmetro com a mesma grafia NÃO é acusado'
+
+    $r = Invoke-Sombra "param([int]`$N)`r`n`$outra = `$N + 1`r`n`$outra`r`n"
+    Assert-Equal 0 $r.codigo 'variável de nome diferente não é acusada'
+
+    <#
+        E O ESCOPO PARA NA PORTA DA FUNÇÃO. Atribuir '$discos' DENTRO de uma
+        função cria variável nova no escopo dela — o parâmetro do script
+        continua intacto. Acusar isso seria falso positivo, e falso positivo é
+        o outro jeito de a varredura morrer: pelo relatório que ninguém lê.
+    #>
+    $r = Invoke-Sombra "param([object]`$Discos)`r`nfunction G {`r`n  `$discos = 1`r`n  `$discos`r`n}`r`nG`r`n"
+    Assert-Equal 0 $r.codigo 'local dentro de função NÃO colide com parâmetro do script'
+
+    # E a mesma grafia FORA da função continua acusada: o recuo é do escopo, não da regra.
+    $r = Invoke-Sombra "param([object]`$Discos)`r`nfunction G { 1 }`r`n`$discos = 1`r`n`$discos`r`n"
+    Assert-True ($r.codigo -ne 0) 'e a mesma grafia no corpo do script continua acusada'
+
+    <#
+        A VARREDURA ENTRA NO PORTÃO, e isto confere que entrou.
+
+        Ferramenta em tools\ que ninguém invoca é documentação com extensão .ps1
+        — precisamente a forma como as três ocorrências passaram. O portão de um
+        projeto SABOTADO tem de ficar vermelho por causa dela.
+    #>
+    $dSom = New-Cenario @((Suite-Ok 'Test-A.ps1' 1))
+    $projSom = Join-Path $dSom 'proj'
+    New-Item -ItemType Directory -Path $projSom -Force | Out-Null
+    foreach ($sub in 'src', 'config', 'tests', 'tools') {
+        Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) $sub) -Destination $projSom -Recurse -Force
+    }
+    $alvoSom = Join-Path $projSom 'src\probes\Probe-DiskHealth.ps1'
+    $txtSom = [System.IO.File]::ReadAllText($alvoSom).Replace('$lidos = $null', '$discos = $null')
+    [System.IO.File]::WriteAllText($alvoSom, $txtSom, $enc)
+
+    $oSom = [System.IO.Path]::GetTempFileName()
+    $pSom = Start-Process -FilePath $psExe -PassThru -NoNewWindow -Wait:$false `
+                -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', `
+                              (Join-Path $projSom 'tests\Run-All.ps1'), '-SuiteDir', $dSom, `
+                              '-SuiteSpec', 'Test-A.ps1:1', '-SemBateria', '-Quiet' `
+                -RedirectStandardOutput $oSom -RedirectStandardError ($oSom + '.err')
+    $null = $pSom.Handle
+    $fimSom = $pSom.WaitForExit(180000)
+    if (-not $fimSom) { try { $pSom.Kill() } catch { } }
+    $tSom = (Get-Content -LiteralPath $oSom -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+    Remove-Item -LiteralPath $oSom, ($oSom + '.err') -Force -ErrorAction SilentlyContinue
+
+    Assert-True (-not ($tSom -match 'TODAS AS SUITES PASSARAM')) 'projeto com sombra de parâmetro NÃO passa no portão'
+    Assert-True ($tSom -match 'sombra de par') 'e o motivo nomeia a sombra de parâmetro'
+
+    <#
+        Pular tem de ser DITO. Todo cenário deste arquivo passa -SemSombra por
+        economia — varrer o repositório inteiro dezenas de vezes custa minutos e
+        não mede nada de novo — e é justamente por isso que o silêncio seria
+        perigoso: o verde deles não fala sobre parâmetro apagado.
+    #>
+    $dPul = New-Cenario @((Suite-Ok 'Test-A.ps1' 1))
+    $tPul = & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $portao `
+                -SuiteDir $dPul -SuiteSpec 'Test-A.ps1:1' -SemBateria -SemSombra -Quiet 2>&1 | Out-String
+    Assert-True ($tPul -match 'sombra de par.metro PULADA') 'pular a varredura de sombra é anunciado em voz alta'
+    Assert-True ($tPul -match 'TODAS AS SUITES PASSARAM') 'e pular não reprova: é escolha explícita, como a bateria'
 
     # =====================================================================
     Start-TestGroup 'Portão: arquivo que sumiu'
