@@ -181,8 +181,15 @@ for ($tentativa = 1; $tentativa -le $maxTentativas; $tentativa++) {
     if (-not $num.ok) { $porque += ("números que não vieram do pacote: " + ($num.orphans -join ', ')) }
     if (-not $reg.ok) { $porque += ("regras citadas que não existem: " + ($reg.invented -join ', ')) }
     if (-not $ach.ok) {
-        if (@($ach.invented).Count -gt 0) { $porque += ("achados relatados que o pacote NÃO trouxe: " + ($ach.invented -join ', ')) }
-        if (@($ach.omitted).Count  -gt 0) { $porque += ("achados do pacote que o laudo APAGOU: "      + ($ach.omitted  -join ', ')) }
+        if (@($ach.invented).Count   -gt 0) { $porque += ("achados relatados que o pacote NÃO trouxe: " + ($ach.invented -join ', ')) }
+        if (@($ach.omitted).Count    -gt 0) { $porque += ("achados do pacote que o laudo APAGOU: "      + ($ach.omitted  -join ', ')) }
+        <#
+            Categoria própria, com mensagem que pede em vez de acusar. Antes o
+            achado incompleto entrava em 'inventados', e a reapresentação mandava
+            o modelo REMOVER um achado que ele é obrigado a relatar — que ele
+            então removia, sendo reprovado por APAGOU na segunda tentativa.
+        #>
+        if (@($ach.incomplete).Count -gt 0) { $porque += ("achados relatados sem preencher todos os campos: " + ($ach.incomplete -join ', ')) }
     }
     if (-not $frm.ok) { $porque += ("obrigações do laudo não cumpridas: " + ($frm.missing -join ' ; ')) }
     [void]$violacoes.Add("tentativa $tentativa - " + ($porque -join ' | '))

@@ -271,6 +271,30 @@ try {
     Assert-True (-not ($t -match 'executei de fora')) 'o arquivo de fora NÃO chegou a ser executado'
 
     # =====================================================================
+    Start-TestGroup 'Portão: o diagnóstico acentuado chega inteiro  [MUTAÇÃO]'
+
+    <#
+        O ENCODING DA LEITURA JÁ MUDOU DUAS VEZES SEM TESTE, e a segunda vez
+        PIOROU o problema. Quem escreve o arquivo é a redireção de console do
+        powershell.exe filho, na página de código do console; ler como UTF8
+        funde dois bytes num caractere e destrói informação que o padrão
+        preservava.
+
+        As contagens são ASCII e não notam. Quem nota é a pessoa que lê por que
+        reprovou — e era exatamente essa parte que chegava como lixo.
+
+        Toda suíte sintética deste arquivo era ASCII pura, então nenhuma
+        exercitava a diferença. Esta tem acento de verdade.
+    #>
+    $acento = 'CONFER' + [char]0x00CA + 'NCIA: eleva' + [char]0x00E7 + [char]0x00E3 + 'o t' + [char]0x00E9 + 'rmica'
+    $d = New-Cenario @(@{ file = 'Test-A.ps1'
+                          body = "'   ok    $acento'`r`n'  1 passou, 0 falhou'`r`nexit 1`r`n" })
+    $r = Invoke-Portao -Dir $d -Lista @(@{file='Test-A.ps1';min=1})
+
+    Assert-True (-not $r.aprovou) 'a suíte com saída acentuada e código 1 reprova'
+    Assert-True ($r.text -match [regex]::Escape($acento)) 'e o texto acentuado chega ao portão INTEIRO, sem se perder na leitura'
+
+    # =====================================================================
     Start-TestGroup 'Portão: arquivo que sumiu'
 
     $d = New-Cenario @((Suite-Ok 'Test-A.ps1' 10))

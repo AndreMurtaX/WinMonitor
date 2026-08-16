@@ -67,6 +67,8 @@ function Get-WMCollectionHealth {
         expectedPerDay   = [int](1440 / [Math]::Max(1, $IntervalMinutes))
         lastDaySamples   = 0
         lastDayCoverage  = $null
+        expectedSoFar    = $null
+        futureStampMin   = $null
     }
 
     if (-not (Test-Path -LiteralPath $PatrolDir)) {
@@ -96,7 +98,8 @@ function Get-WMCollectionHealth {
         em que o processo morreu no meio da escrita — que é exatamente o caso
         que esta função existe para detectar.
     #>
-    $ultimaAt = $null
+    $ultimaAt  = $null
+    $carimbos  = New-Object System.Collections.ArrayList
     for ($i = $linhas.Count - 1; $i -ge 0; $i--) {
         $l = $linhas[$i]
         if ([string]::IsNullOrWhiteSpace($l)) { continue }
@@ -105,8 +108,9 @@ function Get-WMCollectionHealth {
             $dt = [datetime]::MinValue
             $estilo = [System.Globalization.DateTimeStyles]::RoundtripKind
             if ([datetime]::TryParse([string]$o.at, [System.Globalization.CultureInfo]::InvariantCulture, $estilo, [ref]$dt)) {
-                $ultimaAt = $dt.ToUniversalTime()
-                break
+                $utc = $dt.ToUniversalTime()
+                [void]$carimbos.Add($utc)
+                if ($null -eq $ultimaAt) { $ultimaAt = $utc }
             }
         }
     }
@@ -120,32 +124,61 @@ function Get-WMCollectionHealth {
     $atraso                 = [Math]::Round(($NowUtc - $ultimaAt).TotalMinutes, 1)
     $saude.minutesSinceLast = $atraso
 
+    <#
+        A COBERTURA É CONTRA O DIA DECORRIDO, não contra o dia inteiro.
+
+        Comparar com 1440 amostras enquanto o dia ainda está no começo declara
+        escassez numa máquina perfeitamente saudável: medido, às 01:00 dá 4,2%,
+        às 03:00 dá 12,5%, e só depois das 06:00 a afirmação deixa de ser falsa.
+        Uma ressalva que aparece todo dia de madrugada é ruído, e ruído é o que
+        faz alguém parar de ler.
+    #>
     if ($saude.expectedPerDay -gt 0) {
-        $saude.lastDayCoverage = [Math]::Round(100.0 * $linhas.Count / $saude.expectedPerDay, 1)
+        $minutosDoDia = [Math]::Max(1.0, ($NowUtc - $NowUtc.Date).TotalMinutes)
+        $esperadasAteAgora = [Math]::Max(1.0, $minutosDoDia / [Math]::Max(1, $IntervalMinutes))
+        $saude.expectedSoFar   = [int]$esperadasAteAgora
+        $saude.lastDayCoverage = Get-WMRound (100.0 * $linhas.Count / $esperadasAteAgora) 1
     }
 
     <#
-        AMOSTRA NO FUTURO TAMBÉM É COLETA DOENTE.
+        AMOSTRA NO FUTURO TAMBÉM É COLETA DOENTE, e não é hipótese: relógio
+        corrigido para trás por NTP, retomada de suspensão e restauração de
+        instantâneo de VM produzem isso. Medido antes da primeira correção:
+        ronda parada há três dias mais um carimbo 120 dias à frente devolvia
+        ok=True e razão vazia.
 
-        A conferência era só '$atraso -gt limite', e atraso NEGATIVO passava
-        direto. Medido: ronda parada há três dias mais um arquivo com carimbo
-        120 dias à frente devolvia ok=True, minutesSinceLast=-172800 e razão
-        vazia — coleta declarada saudável sobre um dado que ainda não aconteceu.
+        CARIMBO NO FUTURO NÃO PODE PROVAR FRESCOR — nem por pouco.
 
-        Não é hipótese: relógio corrigido para trás por NTP, retomada de
-        suspensão e restauração de instantâneo de máquina virtual produzem isso.
-        E agrava, porque o dia mais recente é escolhido por NOME: um único
-        arquivo mal datado fica sendo "o último dia" até a retenção o apagar,
-        noventa dias depois.
+        A folga de 5 minutos absorvia mais que ruído de relógio: como QUALQUER
+        atraso negativo escapava da trava de dado velho, bastavam 4 minutos de
+        adiantamento para mascarar uma ronda parada há três dias, e a razão
+        ainda AFIRMAVA que ela estava viva. A magnitude tinha caído; a classe
+        não.
 
-        Uma tolerância pequena absorve a diferença normal de relógio entre a
-        escrita e a leitura; além dela, o certo é dizer que não dá para confiar
-        no carimbo — que é diferente de dizer que está tudo bem.
+        Agora o frescor é medido pela amostra mais recente que NÃO está no
+        futuro. Carimbo adiantado deixa de ser prova de vida e vira ressalva:
+        ele pode ser ruído de relógio, e ruído de relógio não atesta coleta.
     #>
-    if ($atraso -lt -5) {
-        $saude.reason = ("a amostra mais recente está {0} min NO FUTURO. " -f [Math]::Abs($atraso)) +
-                        'O relógio da máquina ou o carimbo da coleta está errado, e nenhum veredito de tempo é confiável enquanto isso durar.'
-        return [pscustomobject]$saude
+    if ($atraso -lt 0) {
+        $futuro = [Math]::Abs($atraso)
+        $passado = @($carimbos | Where-Object { $_ -le $NowUtc })
+        if ($passado.Count -eq 0) {
+            $saude.reason = ("a única amostra legível está {0} min NO FUTURO. " -f $futuro) +
+                            'Sem nenhum carimbo no passado, não há como afirmar que a ronda rodou.'
+            return [pscustomobject]$saude
+        }
+
+        $ultimoReal = ($passado | Sort-Object)[-1]
+        $atraso = [Math]::Round(($NowUtc - $ultimoReal).TotalMinutes, 1)
+        $saude.lastSampleAt     = $ultimoReal.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+        $saude.minutesSinceLast = $atraso
+        $saude.futureStampMin   = $futuro
+
+        if ($atraso -gt $StaleAfterMinutes) {
+            $saude.reason = ("há carimbo {0} min no futuro, e a amostra mais recente que NÃO está no futuro tem {1} min (limite: {2}). " -f $futuro, $atraso, $StaleAfterMinutes) +
+                            'O relógio está errado E a ronda está parada; o carimbo adiantado escondia a segunda coisa.'
+            return [pscustomobject]$saude
+        }
     }
 
     if ($atraso -gt $StaleAfterMinutes) {
@@ -162,8 +195,12 @@ function Get-WMCollectionHealth {
         dia não é o mesmo número que um calculado sobre todas.
     #>
     if ($null -ne $saude.lastDayCoverage -and $saude.lastDayCoverage -lt 25) {
-        $saude.reason = ("a ronda está viva, mas o dia tem {0}% das amostras esperadas ({1} de {2}). " -f
-                            $saude.lastDayCoverage, $linhas.Count, $saude.expectedPerDay) +
+        # Format-WMNumber, não -f: dez linhas abaixo há um comentário inteiro
+        # explicando que o operador usa a cultura corrente e faz o texto deixar
+        # de bater com o JSON. Eu escrevi o comentário e caí nele quarenta
+        # linhas acima, na mesma sessão.
+        $saude.reason = ("a ronda está viva, mas o dia tem {0}% das amostras esperadas até agora ({1} de {2}). " -f
+                            (Format-WMNumber $saude.lastDayCoverage), $linhas.Count, $saude.expectedSoFar) +
                         'As estatísticas do dia repousam sobre menos dado do que o normal.'
     }
     [pscustomobject]$saude
@@ -387,8 +424,24 @@ function Format-WMReportText {
     & $add ("=" * 60)
     & $add ''
 
+    <#
+        A RAZÃO DA COLETA SAI NOS DOIS CASOS.
+
+        Só era impressa quando a coleta estava DOENTE. Então a ressalva de
+        cobertura rala — escrita depois de ok=true — era calculada, guardada num
+        campo e nunca renderizada: nem no arquivo, nem no webhook, que enviam
+        apenas este texto. Zero leitores.
+
+        Isso é a mesma falha de antes numa forma nova: antes o número era
+        calculado e descartado; depois passou a ser calculado, guardado e não
+        mostrado. Para quem lê, não mudou nada.
+    #>
     if (-not $Report.health.ok) {
         & $add 'ATENÇÃO — A COLETA NÃO ESTÁ SAUDÁVEL'
+        & $add ("  {0}" -f $Report.health.reason)
+        & $add ''
+    } elseif (-not [string]::IsNullOrWhiteSpace([string]$Report.health.reason)) {
+        & $add 'Sobre a coleta:'
         & $add ("  {0}" -f $Report.health.reason)
         & $add ''
     }

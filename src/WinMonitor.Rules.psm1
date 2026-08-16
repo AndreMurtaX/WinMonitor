@@ -285,7 +285,29 @@ function Invoke-WMRules {
         if ($Hardware.gpus) { $textoHardware += ' | ' + (@($Hardware.gpus) -join ' ') }
     }
 
+    $indice = 0
     foreach ($rule in $Rules.rules) {
+        $indice++
+
+        <#
+            REGRA SEM id MATAVA O MOTOR INTEIRO, e com ele o monitor.
+
+            Toda lacuna é registrada indexando por $rule.id. Com id nulo, o
+            índice de matriz é avaliado como nulo e Invoke-WMRules lança — não
+            há arquivo de achados, Invoke-Report diz "nenhum arquivo de achados",
+            e o sistema emudece. A guarda 'regra sem id' EXISTIA em
+            Test-WMRuleWellFormed; o que morria era justamente a linha que
+            registrava o veredito dela.
+
+            thresholds.json é, por desenho declarado, o arquivo que humanos
+            editam. Uma vírgula fora do lugar não pode calar o monitor: a regra
+            sem identificação vira lacuna com nome sintético, e o dia continua.
+        #>
+        $rid = [string]$rule.id
+        if ([string]::IsNullOrWhiteSpace($rid)) {
+            $malformadas["(regra #$indice sem id)"] = 'regra sem id na tabela de limiares: impossível identificá-la, avaliá-la ou citá-la num laudo'
+            continue
+        }
 
         <#
             Procedência ANTES de forma. A ordem importa: uma regra pendente
@@ -416,6 +438,22 @@ function Invoke-WMRules {
     }
 
     $lacunas = $semFonte.Count + $malformadas.Count + $semDado.Count + $naoSeAplica.Count + $semLinhaBase.Count
+
+    <#
+        ZERO REGRA AVALIADA NÃO É COBERTURA COMPLETA.
+
+        Medido: tabela sem a chave 'rules', ou com 'rules': [], devolvia
+        verdict=normal, findings=0 e complete=TRUE — que vira "Veredito: normal,
+        Cobertura: completa" no relatório entregue. Nada foi medido e a saída
+        afirmava que tudo foi verificado.
+
+        O lema desta camada é que silêncio não é aprovação. Sem esta linha, ele
+        era satisfeito vacuamente: zero lacunas porque zero perguntas.
+    #>
+    if (@($avaliadas).Count -eq 0) {
+        [void]$problemasConfig.Add('nenhuma regra foi avaliada: a tabela de limiares está vazia, ilegível ou inteiramente descartada. Cobertura declarada INCOMPLETA — nada foi medido.')
+        $lacunas++
+    }
 
     [pscustomobject][ordered]@{
         v        = 1

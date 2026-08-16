@@ -425,6 +425,54 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     # E o achado genuinamente sem id continua sendo pego, com o pacote que o tem.
     Assert-True (-not (Test-WMLaudoFindings -Laudo $semId -Package $pac).ok) 'e achado com ruleId em branco continua rejeitado'
 
+    <#
+        ACHADO INCOMPLETO É CATEGORIA PRÓPRIA, e o teste existe por causa de duas
+        mensagens que se contradiziam.
+
+        Um achado LEGÍTIMO com action vazio caía em 'inventados' e o 'continue'
+        pulava a contagem. Resultado medido: o mesmo achado acusado de INVENTADO
+        e de APAGADO na mesma execução — as duas falsas. E o modelo que obedecia
+        a primeira rejeição removia o achado, sendo reprovado por APAGOU na
+        segunda tentativa. Laudo honesto na lixeira, com a guarda mentindo nas
+        duas vezes.
+    #>
+    $semAction = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a placa esta mais quente","action":""},{"ruleId":"R-DISK-SPACE-LOW","reading":"pouco espaco","action":"liberar"}]}'
+    $fi = Test-WMLaudoFindings -Laudo $semAction -Package $pac
+
+    Assert-True (-not $fi.ok) 'achado com campo vazio é rejeitado'
+    Assert-Equal 0 (@($fi.invented).Count) 'mas NÃO é acusado de inventado: o pacote trouxe esse achado'
+    Assert-Equal 0 (@($fi.omitted).Count)  'nem de apagado: o laudo o relatou'
+    Assert-Equal 1 (@($fi.incomplete).Count) 'ele entra na categoria própria'
+    Assert-True ((@($fi.incomplete) -join ' ') -match 'falta preencher: action') 'e a mensagem PEDE o campo que falta'
+
+    # Preenchido, o mesmo laudo passa — a guarda não cobra nada além disso.
+    $completo = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a placa esta mais quente","action":"acompanhar na proxima ronda"},{"ruleId":"R-DISK-SPACE-LOW","reading":"pouco espaco","action":"liberar"}]}'
+    Assert-True (Test-WMLaudoFindings -Laudo $completo -Package $pac).ok 'com os campos preenchidos, passa'
+
+    <#
+        A EXIGÊNCIA PRECISA ESTAR ESCRITA ONDE O MODELO LÊ.
+
+        A guarda cobrava reading e action, e nem o prompt nem o esquema pediam
+        conteúdo: 'required' em JSON Schema exige a CHAVE, não o preenchimento.
+        A conferência cobrava uma obrigação que não estava dita em lugar nenhum,
+        e a reapresentação mandava o modelo remover o que ele era obrigado a
+        relatar.
+
+        Conferir só que a palavra 'reading' aparece é teste fraco — ela aparece
+        em qualquer menção ao campo. O que precisa estar dito são as três
+        obrigações, cada uma verificada pela frase que a carrega.
+    #>
+    $prompt = Get-WMLaudoSystemPrompt
+    <#
+        Sem alternativa (A|B) nas asserções: com ela, mutar uma das frases deixa
+        a outra satisfazendo o teste, e o mutante sobrevive. Medido — foi o que
+        aconteceu na primeira versão desta linha. Uma obrigação, uma âncora.
+    #>
+    Assert-True ($prompt -match 'ruleId, reading e action') 'o prompt nomeia os três campos obrigatórios'
+    Assert-True ($prompt -match 'campo vazio é rejeitado') 'e diz que campo vazio é rejeitado'
+    Assert-True ($prompt -match 'PREENCHA o campo: não remova') 'e manda preencher em vez de remover o achado'
+    Assert-True ($prompt -match 'quando não há ação necessária, escreva isso') 'e ensina o que escrever quando não há ação'
+
     # =====================================================================
     Start-TestGroup 'CONFERÊNCIA: obrigações de forma  [MUTAÇÃO]'
 

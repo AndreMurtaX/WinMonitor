@@ -168,6 +168,12 @@ try {
     Assert-True ($l3.rejected -eq $true) 'e está marcado como reprovado'
     Assert-True ((@($l3.violations) -join ' ') -match 'exceção|explodiu') 'com a exceção registrada'
 
+    # A conferência anti-fantasma nos cenários de REPROVAÇÃO também: a saída crua
+    # tem títulos e listas iguais, e nada garante que ela escape da classe.
+    Assert-SemFantasma -Saida $out  -Cenario 'provedor que falha'
+    Assert-SemFantasma -Saida $out2 -Cenario 'resposta não-JSON'
+    Assert-SemFantasma -Saida $out3 -Cenario 'provedor que explode'
+
     # =====================================================================
     Start-TestGroup 'Driver: laudo que APAGA o achado é reprovado  [MUTAÇÃO]'
 
@@ -179,6 +185,7 @@ try {
 
     Assert-True ($l4.rejected -eq $true) 'laudo que apaga o achado NÃO é apresentado'
     Assert-True ($out4 -match 'APAGOU') 'e o motivo diz que ele apagou'
+    Assert-SemFantasma -Saida $out4 -Cenario 'laudo que apaga o achado'
 
     # =====================================================================
     Start-TestGroup 'Driver: laudo honesto é aceito e o veredito vem das regras'
@@ -254,7 +261,7 @@ try {
     $l7 = Read-Laudo $p7
 
     Assert-True ($l7.rejected -eq $true) 'achado só com ruleId, sem leitura nem ação, é REPROVADO'
-    Assert-True ($out7 -match 'sem reading') 'e o motivo diz o que faltou'
+    Assert-True ($out7 -match 'falta preencher') 'e o motivo PEDE o campo em vez de acusar invencao'
     Assert-SemFantasma -Saida $out7 -Cenario 'achado só com ruleId'
 
     <#

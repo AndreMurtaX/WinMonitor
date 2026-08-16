@@ -657,7 +657,9 @@ O campo findings do seu laudo tem de conter exatamente os achados que vieram em 
 
 As regras que aparecem em coverage NÃO são achados. Elas são regras que não puderam ser avaliadas, e a única coisa a dizer sobre elas é que ficaram sem verificação, no campo notVerified. Transformar uma delas em achado é afirmar um problema que ninguém mediu. Se você não recebeu o valor, isso não é um achado sem valor: é a ausência de um achado.
 
-Há uma conferência automática que compara o seu findings com o do pacote e rejeita o laudo inteiro nos DOIS sentidos: se você acrescentar um achado que não veio, e se você deixar de relatar um que veio. Apagar é a falha mais grave das duas — achado inventado faz alguém olhar a máquina à toa; achado apagado faz ninguém olhar.
+Cada achado do seu findings precisa de TRÊS campos preenchidos: ruleId, reading e action. reading é o que foi medido, dito em português para uma pessoa. action é o que fazer a respeito — e quando não há ação necessária, escreva isso ("acompanhar na próxima ronda; nada a fazer agora"), porque campo vazio é rejeitado. Nenhum dos três aceita string em branco, ponto, traço ou "n/a".
+
+Há uma conferência automática que compara o seu findings com o do pacote e rejeita o laudo inteiro nos DOIS sentidos: se você acrescentar um achado que não veio, e se você deixar de relatar um que veio. Apagar é a falha mais grave das duas — achado inventado faz alguém olhar a máquina à toa; achado apagado faz ninguém olhar. Se a rejeição disser que faltou preencher um campo, PREENCHA o campo: não remova o achado.
 
 O campo notVerified é uma LISTA, e ela tem de conter TODAS as lacunas que o pacote lista em coverage — uma entrada por regra, com o ruleId exato. Não é você que escolhe quais menciona.
 
@@ -770,9 +772,10 @@ function Test-WMLaudoFindings {
         $doPacote[$id]++
     }
 
-    $inventados = New-Object System.Collections.ArrayList
-    $omitidos   = New-Object System.Collections.ArrayList
-    $vistos     = @{}
+    $inventados  = New-Object System.Collections.ArrayList
+    $omitidos    = New-Object System.Collections.ArrayList
+    $incompletos = New-Object System.Collections.ArrayList
+    $vistos      = @{}
     foreach ($a in @($Laudo.findings)) {
         <#
             Item NULO é campo ausente, não achado sem identificador.
@@ -793,34 +796,36 @@ function Test-WMLaudoFindings {
         #>
         if ($null -eq $a) { continue }
 
-        <#
-            ACHADO PRECISA TER LEITURA E AÇÃO, não só identificador.
-
-            Um achado trazendo apenas ruleId passava nas quatro guardas e era
-            renderizado como duas linhas em branco:
-
-                  -
-                    o que fazer:
-
-            Byte a byte, o mesmo artefato que eu declarei eliminado no commit
-            anterior — o esquema exige os três campos, mas nada conferia que
-            vinham preenchidos, e um modelo que devolve string vazia satisfaz o
-            esquema. Relatar um achado sem dizer o que foi lido nem o que fazer
-            não é relatar; é ocupar a linha.
-        #>
         $id = [string]$a.ruleId
-        if (-not [string]::IsNullOrWhiteSpace($id)) {
-            $faltantes = @()
-            if ([string]::IsNullOrWhiteSpace([string]$a.reading)) { $faltantes += 'reading' }
-            if ([string]::IsNullOrWhiteSpace([string]$a.action))  { $faltantes += 'action' }
-            if ($faltantes.Count -gt 0) {
-                [void]$inventados.Add("$id (sem $($faltantes -join ' e '))")
-                continue
-            }
-        }
         if ([string]::IsNullOrWhiteSpace($id)) { [void]$inventados.Add('(achado sem ruleId)'); continue }
+
+        <#
+            ACHADO INCOMPLETO É CATEGORIA PRÓPRIA, e a distinção custou uma
+            reprovação inteira.
+
+            Achado com ruleId legítimo mas sem leitura ou sem ação era jogado em
+            'inventados' e o 'continue' pulava a contagem. Consequência medida:
+            o MESMO achado era acusado de inventado E de apagado na mesma
+            execução — duas mensagens que se contradizem, ambas falsas, sobre um
+            achado que o pacote trouxe e o laudo relatou.
+
+            E o beco sem saída: o modelo que OBEDECIA a primeira rejeição
+            removia o achado, e a segunda tentativa era reprovada por APAGOU.
+            Laudo honesto na lixeira em duas tentativas, com a guarda mentindo
+            nas duas.
+
+            Agora ele CONTA (não é omissão) e vai para uma lista própria, cuja
+            mensagem pede o que falta em vez de acusar invenção.
+        #>
         if (-not $vistos.ContainsKey($id)) { $vistos[$id] = 0 }
         $vistos[$id]++
+
+        $faltantes = @()
+        if ([string]::IsNullOrWhiteSpace([string]$a.reading)) { $faltantes += 'reading' }
+        if ([string]::IsNullOrWhiteSpace([string]$a.action))  { $faltantes += 'action' }
+        if ($faltantes.Count -gt 0) {
+            [void]$incompletos.Add("$id (falta preencher: $($faltantes -join ', '))")
+        }
 
         if (-not $doPacote.ContainsKey($id)) {
             [void]$inventados.Add($id)
@@ -839,9 +844,10 @@ function Test-WMLaudoFindings {
     }
 
     [pscustomobject]@{
-        ok       = ($inventados.Count -eq 0 -and $omitidos.Count -eq 0)
-        invented = @($inventados)
-        omitted  = @($omitidos)
+        ok         = ($inventados.Count -eq 0 -and $omitidos.Count -eq 0 -and $incompletos.Count -eq 0)
+        invented   = @($inventados)
+        omitted    = @($omitidos)
+        incomplete = @($incompletos)
     }
 }
 

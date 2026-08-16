@@ -454,6 +454,56 @@ try {
     $foraEscala = @($real.rules | Where-Object { $_.severity -cnotin @($real.severityScale) })
     Assert-Equal 0 $foraEscala.Count ('nenhuma regra usa severidade fora da escala: ' + (($foraEscala | ForEach-Object { $_.id }) -join ', '))
 
+    # =====================================================================
+    Start-TestGroup 'Tabela degradada: o motor não pode morrer  [MUTAÇÃO]'
+
+    <#
+        thresholds.json é, por desenho declarado, o arquivo que humanos editam.
+        Uma vírgula fora do lugar não pode calar o monitor.
+
+        Medido: regra sem a chave 'id' MATAVA Invoke-WMRules — "o índice de
+        matriz foi avaliado como nulo" —, porque toda lacuna é registrada
+        indexando por $rule.id. Sem arquivo de achados, Invoke-Report diz
+        "nenhum arquivo de achados" e o sistema emudece. A guarda 'regra sem id'
+        existia; o que morria era justamente a linha que registrava o veredito
+        dela.
+    #>
+    $rollupSimples = New-Data '{"v":1,"day":"2026-08-15","host":"T","cpu":{"util":{"p95":10}}}'
+    $FO = '"source":{"kind":"policy","text":"t","url":"","verifiedAt":"2026-08-15"}'
+
+    $semId = New-Rules ('{"version":1,"severityScale":["normal","observar","agir"],"rules":[{"kind":"absolute","subsystem":"cpu","severity":"observar","claim":"x","metric":"cpu.util.p95","operator":"gt","value":90,' + $FO + '}]}')
+    $rSemId = $null
+    try { $rSemId = Invoke-WMRules -Rollup $rollupSimples -Rules $semId } catch { }
+    Assert-True ($null -ne $rSemId) 'regra sem id NÃO mata o motor'
+    Assert-True ((@(Get-WMNodeKeys $rSemId.coverage.malformed) -join ' ') -match 'sem id') 'ela vira lacuna com nome sintético'
+    Assert-True (-not $rSemId.coverage.complete) 'e a cobertura fica incompleta'
+
+    $idVazio = New-Rules ('{"version":1,"severityScale":["normal","observar","agir"],"rules":[{"id":"","kind":"absolute","subsystem":"cpu","severity":"observar","claim":"x","metric":"cpu.util.p95","operator":"gt","value":90,' + $FO + '}]}')
+    $rIdVazio = $null
+    try { $rIdVazio = Invoke-WMRules -Rollup $rollupSimples -Rules $idVazio } catch { }
+    Assert-True ($null -ne $rIdVazio) 'regra com id vazio também não mata o motor'
+
+    <#
+        ZERO REGRA AVALIADA NÃO É COBERTURA COMPLETA.
+
+        Medido: tabela sem a chave 'rules', ou com 'rules': [], devolvia
+        verdict=normal e complete=TRUE — que vira "Veredito: normal, Cobertura:
+        completa" no relatório entregue. Nada foi medido e a saída afirmava que
+        tudo foi verificado. O lema desta camada — silêncio não é aprovação —
+        era satisfeito vacuamente: zero lacunas porque zero perguntas.
+    #>
+    foreach ($vazia in '{"version":1,"severityScale":["normal","observar","agir"]}',
+                       '{"version":1,"severityScale":["normal","observar","agir"],"rules":[]}') {
+        $rv = Invoke-WMRules -Rollup $rollupSimples -Rules (New-Rules $vazia)
+        Assert-True (-not $rv.coverage.complete) 'tabela sem regra avaliada declara cobertura INCOMPLETA'
+        Assert-True ((@($rv.configProblems) -join ' ') -match 'nenhuma regra foi avaliada') 'e diz em voz alta que nada foi medido'
+    }
+
+    # E o caso normal continua podendo declarar cobertura completa.
+    $ok1 = New-Rules ('{"version":1,"severityScale":["normal","observar","agir"],"rules":[{"id":"R-CPU-OK","kind":"absolute","subsystem":"cpu","severity":"observar","claim":"x","metric":"cpu.util.p95","operator":"gt","value":90,' + $FO + '}]}')
+    $rok = Invoke-WMRules -Rollup $rollupSimples -Rules $ok1
+    Assert-True $rok.coverage.complete 'uma regra avaliada e sem lacuna: cobertura completa'
+
 } finally { }
 
 Show-TestSummary

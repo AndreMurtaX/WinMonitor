@@ -267,6 +267,50 @@ try {
 
         # E a prova de que o teste não encostou no projeto de verdade.
         Assert-True (-not (Test-Path (Join-Path $root 'src\probes\Probe-TesteQueFalha.ps1'))) 'a sonda de teste nunca entrou no projeto real'
+
+        <#
+            CONFIG DEGRADADO NÃO PODE MATAR O EXAME.
+
+            Os dois recuos deste driver eram CÓDIGO MORTO: '@($cfg.exam.probes)
+            .Count -eq 0' nunca é verdade quando o bloco falta, porque
+            @($null).Count é UM. Medido: com exam.probes ausente o driver MORRIA
+            montando a amostra com chave vazia — "o valor do argumento name não
+            é válido". E exam.missing ausente produzia lacuna de chave vazia e
+            motivo vazio: buraco anônimo, que parece declaração e não é.
+
+            Monitor que morre é pior que monitor que registra um buraco: quem
+            morre não deixa nem o registro de que tentou.
+        #>
+        $degradados = @(
+            @{ nome = 'sem exam.probes';  acao = { param($c) $c.exam.PSObject.Properties.Remove('probes') } }
+            @{ nome = 'sem exam.missing'; acao = { param($c) $c.exam.PSObject.Properties.Remove('missing') } }
+            @{ nome = 'sem bloco exam';   acao = { param($c) $c.PSObject.Properties.Remove('exam') } }
+            @{ nome = 'probe sem key';    acao = { param($c) $c.exam.probes = @([pscustomobject]@{ name = 'Events' }) } }
+        )
+        <#
+            Cada caso parte do config ÍNTEGRO. Reler o arquivo já degradado fazia
+            as degradações se acumularem, e o segundo caso morria tentando mexer
+            num bloco que o primeiro havia removido — a suíte terminava sem
+            resumo e o portão acusava "não chegou ao fim".
+        #>
+        $cfgIntegro = Get-Content $cfgP -Raw -Encoding UTF8
+
+        foreach ($caso in $degradados) {
+            $c2 = $cfgIntegro | ConvertFrom-Json
+            & $caso.acao $c2
+            [System.IO.File]::WriteAllText($cfgP, (ConvertTo-Json -InputObject $c2 -Depth 14), (New-Object System.Text.UTF8Encoding($false)))
+
+            $ex3 = $null
+            try { $ex3 = & (Join-Path $proj 'src\Invoke-Exam.ps1') -PassThru -NoWrite } catch { }
+            Assert-True ($null -ne $ex3) "config degradado ($($caso.nome)) NÃO mata o exame"
+
+            if ($null -ne $ex3) {
+                $cob = if ($ex3.coverage -is [System.Collections.IDictionary]) { @($ex3.coverage.Keys) }
+                       else { @($ex3.coverage.PSObject.Properties.Name) }
+                Assert-True (@($cob | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -eq 0) "($($caso.nome)) nenhuma lacuna de nome vazio"
+                Assert-True ($ex3.complete -eq $false) "($($caso.nome)) e o exame se declara INCOMPLETO"
+            }
+        }
     } finally {
         Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
     }

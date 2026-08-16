@@ -100,9 +100,39 @@ try {
     Assert-True ($h.reason -match 'FUTURO') 'e a razão diz que o carimbo está à frente'
     Assert-True ($h.minutesSinceLast -lt 0) 'o atraso negativo é registrado, não escondido'
 
-    # Diferença pequena de relógio entre escrita e leitura continua tolerada.
-    $h = Get-WMCollectionHealth -PatrolDir (New-PatrolDir 'quaseAgora' @((Amostra '2026-08-15T18:01:00Z'))) -NowUtc $AGORA
-    Assert-True $h.ok 'um minuto à frente é folga de relógio, não defeito'
+    <#
+        UM ÚNICO CARIMBO NO FUTURO NÃO PROVA VIDA, nem por um minuto.
+
+        A versão anterior tolerava até 5 min de adiantamento, e como QUALQUER
+        atraso negativo escapava da trava de dado velho, bastavam 4 minutos para
+        mascarar uma ronda parada há três dias — com a razão AFIRMANDO que ela
+        estava viva. A magnitude tinha caído de 120 dias para 5 minutos; a classe
+        do defeito, não.
+    #>
+    $h = Get-WMCollectionHealth -PatrolDir (New-PatrolDir 'soFuturo' @((Amostra '2026-08-15T18:01:00Z'))) -NowUtc $AGORA
+    Assert-True (-not $h.ok) 'uma única amostra no futuro não atesta coleta, nem por um minuto'
+    Assert-True ($h.reason -match 'FUTURO') 'e a razão diz que o carimbo está à frente'
+
+    <#
+        O caso REAL de ruído de relógio: a ronda escreveu várias amostras, a mais
+        nova saiu um minuto adiantada. O frescor é medido pela mais recente que
+        NÃO está no futuro, então isto continua saudável — que é o que impede a
+        correção de virar alarme falso diário.
+    #>
+    $ruido = @((Amostra '2026-08-15T17:57:00Z'), (Amostra '2026-08-15T17:58:00Z'), (Amostra '2026-08-15T18:01:00Z'))
+    $h = Get-WMCollectionHealth -PatrolDir (New-PatrolDir 'ruidoRelogio' $ruido) -NowUtc $AGORA
+    Assert-True $h.ok 'ruído de relógio com amostras reais atrás continua saudável'
+    Assert-Equal 2 $h.minutesSinceLast 'e o frescor vem da amostra mais recente que NÃO está no futuro'
+
+    <#
+        O caso que a folga escondia: ronda parada, mas com um carimbo pouco
+        adiantado. Antes: ok=True e "a ronda está viva". Agora o adiantamento
+        deixa de ser prova e a parada aparece.
+    #>
+    $mascara = @((Amostra '2026-08-12T10:00:00Z'), (Amostra '2026-08-15T18:04:00Z'))
+    $h = Get-WMCollectionHealth -PatrolDir (New-PatrolDir 'mascarada' $mascara) -NowUtc $AGORA
+    Assert-True (-not $h.ok) 'carimbo pouco adiantado não esconde mais ronda parada há dias'
+    Assert-True ($h.reason -match 'parada') 'e a razão diz as DUAS coisas: relógio errado e ronda parada'
 
     <#
         Cobertura rala: a ronda está viva e o dia tem quase nada. Não reprova —
@@ -115,6 +145,28 @@ try {
     Assert-True $h.ok 'uma amostra recente mantém a coleta saudável'
     Assert-True ($h.reason -match 'amostras esperadas') 'mas a escassez do dia é declarada'
     Assert-True ($h.lastDayCoverage -lt 1) 'e a cobertura do dia é medida'
+
+    <#
+        A COBERTURA É CONTRA O DIA DECORRIDO, e isto é o que separa ressalva de
+        ruído diário.
+
+        Medido: comparando contra as 1440 do dia inteiro, uma máquina
+        PERFEITAMENTE saudável declarava escassez toda madrugada — 4,2% à 01:00,
+        12,5% às 03:00, 20,8% às 05:00 — e só depois das 06:00 a afirmação
+        deixava de ser falsa. Ressalva que aparece todo dia é ruído, e ruído faz
+        alguém parar de ler.
+    #>
+    $treHoras = [datetime]::Parse('2026-08-15T03:00:00Z', [System.Globalization.CultureInfo]::InvariantCulture,
+                                  [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    $cheio = @(1..180 | ForEach-Object { Amostra ("2026-08-15T{0:00}:{1:00}:00Z" -f [int](($_ - 1) / 60), (($_ - 1) % 60)) })
+    $h = Get-WMCollectionHealth -PatrolDir (New-PatrolDir 'madrugada' $cheio) -NowUtc $treHoras
+    Assert-True $h.ok 'às 03:00, com todas as amostras do período, a coleta é saudável'
+    Assert-True (-not ($h.reason -match 'amostras esperadas')) 'e NÃO declara escassez: 180 de 180 esperadas até agora'
+    Assert-Equal 180 $h.expectedSoFar 'o esperado é o do dia DECORRIDO, não o do dia inteiro'
+
+    # E o número da razão sai com PONTO, como o JSON — não com a vírgula do -f.
+    $h = Get-WMCollectionHealth -PatrolDir (New-PatrolDir 'ponto' @((Amostra '2026-08-15T17:59:00Z'))) -NowUtc $AGORA
+    Assert-True (-not ($h.reason -match '\d,\d')) 'a porcentagem na razão usa ponto, batendo com o JSON'
 
     # =====================================================================
     Start-TestGroup 'Diferença de dias, com cultura hostil'
@@ -284,6 +336,31 @@ try {
     $rel2.health = $SAUDAVEL
     $txt2 = Format-WMReportText -Report $rel2
     Assert-True ($txt2 -match 'vale para o que foi medido') '"nenhum achado" vem com a ressalva do que não foi medido'
+
+    <#
+        A RAZÃO DA COLETA PRECISA CHEGAR A QUEM LÊ, mesmo com a coleta saudável.
+
+        Medido pela verificação: a ressalva de cobertura rala era escrita DEPOIS
+        de ok=true, e Format-WMReportText só imprimia health.reason quando a
+        coleta estava DOENTE. Notify-File grava só este texto; Notify-Webhook
+        envia só este texto. Zero leitores.
+
+        É a mesma falha de antes numa forma nova: antes o número era calculado e
+        descartado; depois passou a ser calculado, guardado num campo e não
+        mostrado. Para quem lê, não mudou nada — e eu tinha escrito no comentário
+        que "aparece na razão para quem lê o relatório".
+    #>
+    $rel3 = $rel | Select-Object *
+    $rel3.health = [pscustomobject]@{ ok = $true; reason = 'a ronda está viva, mas o dia tem 3% das amostras esperadas até agora (12 de 400).' }
+    $txt3 = Format-WMReportText -Report $rel3
+    Assert-True ($txt3 -match 'amostras esperadas') 'a ressalva de coleta rala aparece no texto entregue'
+    Assert-True ($txt3 -match 'Sobre a coleta') 'sob um título que a distingue do alarme de coleta parada'
+    Assert-True (-not ($txt3 -match 'NÃO ESTÁ SAUDÁVEL')) 'e sem chamar de doente uma coleta que está viva'
+
+    # Coleta saudável e sem ressalva não inventa seção.
+    $rel4 = $rel | Select-Object *
+    $rel4.health = [pscustomobject]@{ ok = $true; reason = $null }
+    Assert-True (-not ((Format-WMReportText -Report $rel4) -match 'Sobre a coleta')) 'sem ressalva, a seção nem aparece'
 
     # =====================================================================
     Start-TestGroup 'Invoke-Report: o estado não pode avançar sem entrega'
