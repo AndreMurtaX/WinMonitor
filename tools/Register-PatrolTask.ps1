@@ -33,6 +33,15 @@ param(
     [string]$TaskName = 'Patrol',
     [int]$IntervalMinutes = 1,
     [switch]$CurrentUserOnly,
+    [switch]$Elevado,
+    <#
+        -Simular imprime o plano e NÃO registra nada. Existe para que o texto
+        que este arquivo promete ao usuário possa ser conferido por teste: sem
+        isso, a única forma de testar seria registrar tarefa de verdade na
+        máquina de quem roda a suíte, e teste não altera configuração do
+        sistema de ninguém.
+    #>
+    [switch]$Simular,
     [switch]$Unregister
 )
 
@@ -108,6 +117,19 @@ $now = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
     No modo -CurrentUserOnly a tarefa roda com a conta logada, então rearmar no
     LOGON é o equivalente exato de rearmar no boot — e não pede nada.
 #>
+<#
+    $conta ANTES DE QUEM A USA, e isto era um defeito de verdade.
+
+    A atribuição estava DEPOIS do gatilho que a consome: '-AtLogOn -User $conta'
+    recebia $null, e o gatilho de logon era registrado sem a conta que ele
+    deveria observar. PowerShell não avisa — variável não atribuída é $null, e
+    $null é um argumento válido para o cmdlet.
+
+    É a mesma família da sombra de parâmetro: o valor errado passa em silêncio e
+    o que roda não é o que está escrito.
+#>
+$conta = '{0}\{1}' -f $env:USERDOMAIN, $env:USERNAME
+
 $boot = if ($CurrentUserOnly) {
     New-ScheduledTaskTrigger -AtLogOn -User $conta
 } else {
@@ -115,12 +137,27 @@ $boot = if ($CurrentUserOnly) {
 }
 $boot.Repetition = $now.Repetition
 
-$conta = '{0}\{1}' -f $env:USERDOMAIN, $env:USERNAME
+<#
+    O NÍVEL DE EXECUÇÃO É O QUE SEPARA A RONDA DO EXAME.
+
+    -Elevado registra com RunLevel Highest: a ronda passa a rodar com token de
+    administrador, e com ele as leituras que HOJE ficam declaradas como lacuna
+    passam a ser possíveis — Get-StorageReliabilityCounter (setores realocados,
+    horas ligado) e MSAcpi_ThermalZoneTemperature (temperatura de CPU). Medido:
+    sem elevação as duas devolvem acesso negado; é a lacuna 'smartDetalhado'
+    que a F3 declara.
+
+    Exige que a conta seja administradora E que o registro seja feito de um
+    prompt elevado. Sem -Elevado nada muda de comportamento: a ronda continua
+    coletando o que já coleta, e as lacunas continuam declaradas em vez de
+    caladas.
+#>
+$nivel = if ($Elevado) { 'Highest' } else { 'Limited' }
 
 $principal = if ($CurrentUserOnly) {
-    New-ScheduledTaskPrincipal -UserId $conta -LogonType Interactive -RunLevel Limited
+    New-ScheduledTaskPrincipal -UserId $conta -LogonType Interactive -RunLevel $nivel
 } else {
-    New-ScheduledTaskPrincipal -UserId $conta -LogonType S4U -RunLevel Limited
+    New-ScheduledTaskPrincipal -UserId $conta -LogonType S4U -RunLevel $nivel
 }
 
 $settings = New-ScheduledTaskSettingsSet `
@@ -152,6 +189,55 @@ $settings = New-ScheduledTaskSettingsSet `
     O recuo para a raiz fica, porque é barato e cobre políticas de grupo que
     restrinjam a criação de pastas — mas ele nunca foi o que faltava aqui.
 #>
+<#
+    O QUE O MODO INTERACTIVE CUSTA NA TELA, dito antes de custar.
+
+    Com LogonType Interactive a tarefa roda DENTRO da sessão do usuário, e o
+    Windows cria um conhost.exe para o powershell.exe a cada disparo. A janela
+    é criada, pintada e fechada — uma piscada por minuto, na tela de quem está
+    usando a máquina. '-WindowStyle Hidden' não evita: quem cria a janela é o
+    host do console, antes de o PowerShell chegar a ler o argumento.
+
+    Eu registrei este modo na máquina do dono e não disse isso. Ele notou
+    sozinho, no dia seguinte, e teve de perguntar o que era. A ressalva existe
+    aqui para que a próxima pessoa saiba antes, não depois.
+
+    S4U não tem o problema: roda fora da sessão interativa, e não há janela
+    nenhuma para piscar.
+#>
+$avisoPiscar = 'RESSALVA: neste modo o Windows cria uma janela de console a cada disparo — uma piscada por minuto na tela. -WindowStyle Hidden nao evita. O modo S4U (sem -CurrentUserOnly, com elevacao) nao pisca.'
+
+if ($Simular) {
+    "PLANO (nada foi registrado — -Simular)"
+    "Tarefa:    $full"
+    "Executa:   $psExe"
+    "Argumento: $($action.Arguments)"
+    "Intervalo: $IntervalMinutes min"
+    "Principal: $($principal.LogonType) · nivel $nivel · conta $conta"
+    if ($CurrentUserOnly) {
+        "Modo: Interactive — roda SÓ com a conta $conta logada. Sem elevação."
+        $avisoPiscar
+    } else {
+        "Modo: S4U — roda mesmo sem ninguém logado. Exige elevação para registrar."
+    }
+    <#
+        A frase deriva de $nivel, o valor que VAI para o principal — e não de
+        $Elevado, a intenção de quem chamou.
+
+        Medido: com a mensagem derivando de $Elevado, um mutante que forçava
+        $nivel = 'Limited' sobrevivia. O plano anunciava "Nivel Highest" com o
+        principal registrado como Limited, e o teste dava verde porque conferia
+        a PROMESSA em vez do VALOR. É o defeito inteiro deste projeto em quatro
+        linhas, cometido dentro da defesa contra ele.
+    #>
+    if ($nivel -eq 'Highest') {
+        "Nivel Highest: a ronda passa a poder ler SMART detalhado e temperatura de CPU."
+    } else {
+        "Nivel Limited: SMART detalhado e temperatura de CPU seguem como lacuna DECLARADA."
+    }
+    return
+}
+
 $usouRaiz = $false
 try {
     Register-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName `
@@ -164,6 +250,7 @@ try {
     "Intervalo: $IntervalMinutes min · início: 1 min a partir de agora e a cada boot"
     if ($CurrentUserOnly) {
         "Modo: Interactive — roda SÓ com a conta $conta logada. Sem elevação."
+        $avisoPiscar
     } else {
         "Modo: S4U — roda mesmo sem ninguém logado."
     }
@@ -191,6 +278,7 @@ try {
             "Intervalo: $IntervalMinutes min · início: 1 min a partir de agora e a cada boot"
             if ($CurrentUserOnly) {
                 "Modo: Interactive — roda SÓ com a conta $conta logada. Sem elevação."
+                $avisoPiscar
             } else {
                 "Modo: S4U — roda mesmo sem ninguém logado."
             }

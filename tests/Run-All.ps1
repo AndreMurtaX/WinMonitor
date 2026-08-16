@@ -110,9 +110,51 @@ param(
         economia e pular por conveniência.
     #>
     [switch]$SemSombra,
-    [int]$BateriaTimeoutSec = 2700,
-    [int]$MutantesMin = 51
+    [int]$BateriaTimeoutSec = 5400,
+    [int]$MutantesMin = 63,
+    <#
+        Pisos das duas varreduras, pela mesma razão do piso por suíte: varredura
+        que encolhe fica vacuamente verde. Medido: reduzir a guarda de LF a
+        '.psm1', ou fazê-la pular tests\ e tools\, ou a varredura de sombra
+        ignorar os módulos, passavam as três com o portão verde — porque cada
+        cenário sabota UM arquivo, e alcançar aquele arquivo bastava.
+
+        Atualizados à mão quando o projeto cresce. Se se ajustassem sozinhos,
+        não seriam piso.
+    #>
+    [int]$ArquivosCrlfMin = 39,
+    [int]$ArquivosSombraMin = 39
 )
+
+<#
+    ERRO DE USO SAI CRU NO STDERR, e não por Write-Error.
+
+    O formatador de erro do PowerShell quebra a mensagem na largura do console —
+    120 colunas — e a posição da quebra depende do COMPRIMENTO DO CAMINHO do
+    script, que entra no cabeçalho do ErrorRecord. O resultado é uma frase
+    partida ao meio, e uma asserção que casava com ela passa a falhar conforme
+    ONDE o projeto está no disco.
+
+    Medido pela décima primeira verificação, mesma árvore e mesmo commit:
+
+        comprimento de tests\Run-All.ps1 = 55  ->  88 passou, 0 falhou
+                                         = 70  ->  88 passou, 0 falhou
+                                         = 87  ->  81 passou, 7 falhou
+
+    A faixa que reprova é de 72 a 91 caracteres. O repositório do autor tem 35 e
+    passa; um zip do GitHub descompactado como '...\Projetos\WinMonitor-main'
+    tem 76 e REPROVA. O verde dependia do lugar do projeto no disco, e nada
+    nesta suíte tinha como perceber.
+
+    Eu já declarei isso consertado uma vez, trocando a captura de saída por
+    redirecionamento em arquivo. Aquilo curou o vácuo do EAP — que era real — e
+    não curou isto: o texto continuava chegando partido. Duas causas, um sintoma,
+    e eu parei na primeira.
+#>
+function Write-WMErroDeUso {
+    param([string]$Mensagem)
+    [Console]::Error.WriteLine("ERRO: $Mensagem")
+}
 
 $suites = @(
     @{ file = 'Test-Rollup.ps1';      min = 147 }
@@ -121,8 +163,8 @@ $suites = @(
     @{ file = 'Test-LaudoDriver.ps1'; min = 37  }
     @{ file = 'Test-Report.ps1';      min = 93  }
     @{ file = 'Test-Exam.ps1';        min = 81  }
-    @{ file = 'Test-Gate.ps1';        min = 88  }
-    @{ file = 'Test-Drivers.ps1';     min = 56  }
+    @{ file = 'Test-Gate.ps1';        min = 115 }
+    @{ file = 'Test-Drivers.ps1';     min = 78  }
 )
 
 if ($SuiteSpec) {
@@ -145,20 +187,20 @@ if ($SuiteSpec) {
         $par = $item -split ':'
         $piso = 0
         if ($par.Count -ne 2 -or -not [int]::TryParse($par[1].Trim(), [ref]$piso)) {
-            Write-Error "SuiteSpec ilegível em '$item' — o formato é arquivo:piso"
+            Write-WMErroDeUso "SuiteSpec ilegível em '$item' — o formato é arquivo:piso"
             exit 2
         }
         $arq = $par[0].Trim()
         if ([string]::IsNullOrWhiteSpace($arq)) {
-            Write-Error "SuiteSpec sem nome de arquivo em '$item'"
+            Write-WMErroDeUso "SuiteSpec sem nome de arquivo em '$item'"
             exit 2
         }
         if ($arq -match '[\\/]' -or $arq -match '\.\.') {
-            Write-Error "SuiteSpec com caminho em '$arq' — só nome de arquivo dentro do diretório de suítes"
+            Write-WMErroDeUso "SuiteSpec com caminho em '$arq' — só nome de arquivo dentro do diretório de suítes"
             exit 2
         }
         if ($piso -lt 0) {
-            Write-Error "SuiteSpec com piso negativo em '$item' — piso é contagem de testes"
+            Write-WMErroDeUso "SuiteSpec com piso negativo em '$item' — piso é contagem de testes"
             exit 2
         }
         [void]$lista.Add(@{ file = $arq; min = $piso })
@@ -167,7 +209,7 @@ if ($SuiteSpec) {
 }
 
 if (@($suites).Count -eq 0) {
-    Write-Error 'nenhuma suíte a executar: um portão sem suíte não aprova nada'
+    Write-WMErroDeUso 'nenhuma suíte a executar: um portão sem suíte não aprova nada'
     exit 2
 }
 
@@ -183,7 +225,7 @@ if (@($suites).Count -eq 0) {
     passa. É por isso que exigir os dois juntos confina sem tirar nada.
 #>
 if ($BateriaPath -and -not $SuiteDir) {
-    Write-Error '-BateriaPath só é aceito junto de -SuiteDir: é costura de aferição, não configuração do portão'
+    Write-WMErroDeUso '-BateriaPath só é aceito junto de -SuiteDir: é costura de aferição, não configuração do portão'
     exit 2
 }
 
@@ -383,14 +425,50 @@ $projRaiz = Split-Path -Parent $PSScriptRoot
     O QUE ELA NÃO PEGA, dito em vez de negado: divergência de CODIFICAÇÃO. BOM
     ausente num .ps1 corrompe acento sem mudar quebra de linha nenhuma — quem
     cuida disso é tools\Repair-Encoding.ps1, e ele não roda daqui.
+
+    E ELA SÓ VALE PARA O QUE O .gitattributes GOVERNA.
+
+    A primeira versão varria tudo, e reprovava README.md e config.json vindos em
+    LF de um clone com core.eol=lf — que é entrega LEGÍTIMA, porque esses dois
+    são 'text=auto' e não 'eol=crlf'. Vermelho com a mensagem errada é pior que
+    trava nenhuma: é assim que alguém aprende a desligar o portão.
+
+    A causa era um filtro que não filtra: com -LiteralPath e -Recurse, o
+    Get-ChildItem do PowerShell 5.1 IGNORA -Include. Medido nesta árvore: 46
+    arquivos com -Include, 39 filtrando de verdade, e os 7 intrusos eram
+    .gitattributes, .gitignore, LICENSE, README.md e os três JSONs.
+
+    O projeto tem doutrina explícita sobre isso — "código morto com cara de
+    defesa é pior que defesa nenhuma" — e eu escrevi as duas travas novas com
+    um filtro morto.
 #>
+$EXT_CRLF = @('.ps1', '.psm1', '.psd1')
+
+$varridos = @(Get-ChildItem -LiteralPath $projRaiz -Recurse -File -ErrorAction SilentlyContinue |
+                  Where-Object { $EXT_CRLF -contains $_.Extension -and $_.FullName -notmatch '\\(data|logs|\.git)\\' })
+
+<#
+    PISO DE ARQUIVOS VARRIDOS, pela mesma razão do piso por suíte e do piso de
+    mutantes: varredura que não varre nada é vacuamente verdadeira.
+
+    Medido antes do piso: reduzir a guarda a '.psm1', ou fazê-la pular tests\ e
+    tools\, deixava o portão VERDE. O cenário de sabotagem tocava um arquivo só,
+    então bastava alcançar aquele arquivo para o teste passar — a regra nasceu
+    com o alcance do defeito que a gerou, de novo.
+#>
+if ($varridos.Count -lt $ArquivosCrlfMin) {
+    [void]$falhas.Add("quebra de linha: varreu $($varridos.Count) script(s), o piso é $ArquivosCrlfMin — a varredura encolheu e o verde dela não vale")
+}
+
 $lfSoltos = New-Object System.Collections.ArrayList
-foreach ($arq in @(Get-ChildItem -LiteralPath $projRaiz -Recurse -File -Include '*.ps1', '*.psm1', '*.psd1' -ErrorAction SilentlyContinue |
-                       Where-Object { $_.FullName -notmatch '\\(data|logs|\.git)\\' })) {
+foreach ($arq in $varridos) {
     $bytes = [System.IO.File]::ReadAllBytes($arq.FullName)
     for ($i = 0; $i -lt $bytes.Length; $i++) {
         if ($bytes[$i] -eq 10 -and ($i -eq 0 -or $bytes[$i - 1] -ne 13)) {
-            [void]$lfSoltos.Add($arq.FullName.Substring($projRaiz.Length).TrimStart('\'))
+            $rel = if ($arq.FullName.StartsWith($projRaiz, [StringComparison]::OrdinalIgnoreCase)) {
+                       $arq.FullName.Substring($projRaiz.Length).TrimStart('\')
+                   } else { $arq.FullName }
+            [void]$lfSoltos.Add($rel)
             break
         }
     }
@@ -436,6 +514,24 @@ if ($SemSombra) {
         if (-not $Quiet) { $txtSom.TrimEnd() }
         if ($psom.ExitCode -ne 0) {
             [void]$falhas.Add('varredura de sombra de parâmetro: há variável local colidindo com parâmetro só na caixa')
+        }
+        <#
+            E O PISO DELA TAMBÉM É CONFERIDO AQUI, do lado de fora.
+
+            A varredura declara quantos arquivos leu; sem conferir esse número,
+            reduzi-la a um subconjunto deixava o portão verde. Medido: fazê-la
+            ignorar os .psm1 tirava os cinco módulos — cerca de 3,4 mil linhas,
+            Laudo, Report, Rollup, Rules e WinMonitor — da única defesa mecânica
+            contra a armadilha que mordeu três vezes, e nada acusava.
+
+            A conferência é do lado de FORA porque a varredura é quem seria
+            sabotada: instrumento não confere o próprio alcance.
+        #>
+        $mSom = [regex]::Match($txtSom, '\((\d+) arquivo')
+        if (-not $mSom.Success) {
+            [void]$falhas.Add('varredura de sombra de parâmetro: não declarou quantos arquivos varreu — não dá para saber se ela encolheu')
+        } elseif ([int]$mSom.Groups[1].Value -lt $ArquivosSombraMin) {
+            [void]$falhas.Add("varredura de sombra de parâmetro: varreu $($mSom.Groups[1].Value) arquivo(s), o piso é $ArquivosSombraMin — o alcance encolheu")
         }
     }
     Remove-Item -LiteralPath $somOut, ($somOut + '.err') -Force -ErrorAction SilentlyContinue

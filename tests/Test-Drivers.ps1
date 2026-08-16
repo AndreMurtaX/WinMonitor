@@ -456,6 +456,161 @@ try {
     Assert-True ($naoAplica2 -contains 'R-GPU-TEMP-SPEC-3080') 'noutra placa, a regra fica declarada como não aplicável'
     Assert-True (-not $ach2.coverage.complete) 'e isso conta como lacuna de cobertura'
 
+    # =====================================================================
+    Start-TestGroup 'A PONTE exame→regras, executada de verdade  [MUTAÇÃO]'
+
+    <#
+        ESTE GRUPO EXISTE PORQUE A PONTE NUNCA TINHA RODADO SOB TESTE.
+
+        `Invoke-Rules.ps1` enxerta o bloco do exame (`evt`, `dsk`) na raiz do
+        objeto que o motor avalia. É o único caminho de produção que faz isso, e
+        a décima primeira verificação mediu: acrescentar 'dsk' e 'evt' à lista de
+        chaves descartadas deixava as OITO suítes verdes — 822 de 822. Um
+        `throw` dentro do bloco provava o resto: Test-Drivers 56 passou, 0
+        falhou. Nenhuma linha dali jamais executou sob teste, porque nenhuma
+        suíte escrevia `data\exam\<dia>.json`.
+
+        Em produção isso desliga as DUAS regras de falha de hardware do projeto
+        — R-WHEA-HARDWARE-ERROR e R-DISK-HEALTH-DEGRADED. Elas caem em "sem
+        dado", o veredito continua "normal", e o portão continua verde: a forma
+        exata de silêncio que este projeto existe para não ter.
+
+        E `Test-Exam.ps1` AFIRMAVA que as três mutações estavam defendidas. A do
+        meio não estava: aquele teste fazia o enxerto ele mesmo, com Add-Member,
+        em vez de executar o `Invoke-Rules.ps1`. Testar a própria imitação do
+        código não é testar o código.
+    #>
+    $dEx = @(Get-DayIds -Count 1)[0]
+    $pEx = New-TempProject
+    Add-FixtureDay $pEx $dEx -Samples 200 -Bursts 2 -BurstLen 10 -Seed 77
+    & (Join-Path $pEx 'src\Invoke-Rollup.ps1') | Out-Null
+
+    <#
+        Sem exame no disco, as duas regras têm de ficar SEM DADO — nunca
+        aprovadas. Esta metade é o contraste que dá sentido à outra: se elas já
+        disparassem sem exame, o enxerto não estaria sendo medido.
+    #>
+    & (Join-Path $pEx 'src\Invoke-Rules.ps1') -Quiet | Out-Null
+    $semExame = Read-Json (Join-Path $pEx "data\findings\$dEx.json")
+    $semDado = @($semExame.coverage.noData.PSObject.Properties.Name)
+    Assert-True ($semDado -contains 'R-WHEA-HARDWARE-ERROR') 'sem exame, a regra de WHEA fica SEM DADO'
+    Assert-True ($semDado -contains 'R-DISK-HEALTH-DEGRADED') 'e a de saúde de disco também'
+    Assert-True (-not (@($semExame.findings | ForEach-Object { $_.ruleId }) -contains 'R-WHEA-HARDWARE-ERROR')) 'e nenhuma das duas dispara sem dado'
+
+    <#
+        Agora COM exame no disco, escrito no formato que Invoke-Exam grava. As
+        chaves 'v', 'host', 'at', 'mode', 'coverage' e 'complete' são as que o
+        enxerto descarta; 'evt' e 'dsk' são as que ele precisa levar adiante.
+    #>
+    $exameJson = [ordered]@{
+        v = 1; host = 'FIXTURE'; at = "$dEx`T12:00:00-03:00"; mode = 'exam'
+        evt = [ordered]@{ windowDays = 30; logReadable = $true; wheaErrors = 3; unexpectedShutdowns = 0; kernelPower41 = 0; cleanShutdowns = 10 }
+        dsk = [ordered]@{ readable = $true; unhealthy = 2; disks = @(@{ id = 0; health = 'Warning'; name = 'FIXTURE DISK' }) }
+        coverage = [ordered]@{ smart = 'lacuna sintetica do teste' }
+        complete = $false
+    }
+    New-Item -ItemType Directory -Path (Join-Path $pEx 'data\exam') -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $pEx "data\exam\$dEx.json"),
+        ($exameJson | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+
+    & (Join-Path $pEx 'src\Invoke-Rules.ps1') -Quiet | Out-Null
+    $comExame = Read-Json (Join-Path $pEx "data\findings\$dEx.json")
+    $disparadas = @($comExame.findings | ForEach-Object { $_.ruleId })
+    $avaliadas  = @($comExame.coverage.evaluated)
+
+    Assert-True ($avaliadas -contains 'R-WHEA-HARDWARE-ERROR') 'com exame no disco, a regra de WHEA é efetivamente AVALIADA'
+    Assert-True ($avaliadas -contains 'R-DISK-HEALTH-DEGRADED') 'e a de saúde de disco também'
+    Assert-True ($disparadas -contains 'R-WHEA-HARDWARE-ERROR') 'e ela DISPARA: 3 erros de hardware não passam despercebidos'
+    Assert-True ($disparadas -contains 'R-DISK-HEALTH-DEGRADED') 'e a de disco dispara com 2 discos fora de Healthy'
+
+    <#
+        E o veredito sobe até a severidade da mais grave. Sem esta asserção o
+        enxerto poderia levar o dado adiante e o resultado morrer na saída — que
+        é a forma de defeito da nona rodada: a trava parando na fronteira do
+        módulo em vez de acompanhar a consequência.
+    #>
+    Assert-Equal 'parar' $comExame.verdict 'e o veredito do dia sobe para a severidade do WHEA'
+    <#
+        A asserção olha o CAMPO da evidência, não o texto dela. Uma versão
+        anterior fazia '[string]$evid -match 2' — e evidence é um array de
+        objetos, cuja conversão para texto dá o nome do tipo. Ela teria passado
+        ou falhado por motivo nenhum, e é o mesmo defeito que fez um mutante
+        sobreviver duas horas atrás: conferir a renderização em vez do valor.
+    #>
+    $evid = @(($comExame.findings | Where-Object { $_.ruleId -eq 'R-DISK-HEALTH-DEGRADED' }).evidence)
+    Assert-Equal 'dsk.unhealthy' $evid[0].metric 'a evidência da regra de disco aponta a métrica que a sonda escreveu'
+    Assert-Equal 2 $evid[0].value 'com o valor medido, vindo do exame que o enxerto trouxe'
+
+    # =====================================================================
+    Start-TestGroup 'Registro da ronda: o que ele PROMETE ao dono da máquina  [MUTAÇÃO]'
+
+    <#
+        ESTE GRUPO NASCEU DE UMA PERGUNTA DO DONO DA MÁQUINA.
+
+        Registrei a ronda em modo Interactive, sem elevação, e não disse que
+        isso faz o Windows criar uma janela de console a cada disparo — uma
+        piscada por minuto na tela dele. Ele notou sozinho no dia seguinte e
+        teve de perguntar o que era.
+
+        A ressalva não é cosmética: é a diferença entre uma escolha e uma
+        surpresa. E ressalva sem teste é ressalva que some no próximo commit.
+
+        -Simular imprime o plano e não registra nada — é o que torna isto
+        testável sem alterar a configuração do sistema de quem roda a suíte.
+    #>
+    $registrador = Join-Path $root 'tools\Register-PatrolTask.ps1'
+    Assert-True (Test-Path $registrador) 'o registrador da ronda existe'
+
+    $planoInterativo = (& $registrador -CurrentUserOnly -Simular -TaskName 'PatrolTesteSimulado' | Out-String)
+    Assert-True ($planoInterativo -match 'nada foi registrado') '-Simular anuncia que não registrou nada'
+    Assert-True ($planoInterativo -match 'piscada por minuto') 'o modo Interactive DECLARA a janela que pisca a cada disparo'
+    Assert-True ($planoInterativo -match 'WindowStyle Hidden nao evita') 'e diz que o argumento óbvio não resolve'
+
+    <#
+        E O CONTRASTE, que é o que dá sentido à ressalva: no modo S4U não há
+        janela nenhuma, e carimbar a ressalva nos dois lugares seria tão errado
+        quanto omiti-la — o dono decidiria contra um custo que não existe.
+    #>
+    $planoS4U = (& $registrador -Simular -TaskName 'PatrolTesteSimulado' | Out-String)
+    Assert-True (-not ($planoS4U -match 'piscada por minuto')) 'o modo S4U NÃO carrega a ressalva: nele não há janela para piscar'
+    Assert-True ($planoS4U -match 'S4U') 'e ele se identifica como S4U'
+    Assert-True ($planoS4U -match 'Limited') 'sem -Elevado o nível é Limited'
+    Assert-True ($planoS4U -match 'lacuna DECLARADA') 'e a lacuna do SMART detalhado segue declarada, não calada'
+
+    <#
+        A asserção olha a linha do PRINCIPAL — 'nivel Highest' —, que imprime o
+        valor que vai ser registrado, e não a frase explicativa.
+
+        Medido: com a asserção casando só 'Highest' em qualquer lugar do texto,
+        um mutante que forçava o nível a Limited SOBREVIVIA. O plano anunciava
+        "Nivel Highest" enquanto registrava Limited, porque a frase derivava da
+        intenção de quem chamou e não do valor. Conferir a promessa em vez do
+        valor é o defeito que este projeto inteiro existe para não ter.
+    #>
+    $planoElevado = (& $registrador -Elevado -Simular -TaskName 'PatrolTesteSimulado' | Out-String)
+    Assert-True ($planoElevado -match 'nivel Highest') 'com -Elevado o PRINCIPAL sai com nível Highest'
+    Assert-True ($planoElevado -match 'SMART detalhado e temperatura de CPU') 'e o plano diz o que isso destrava'
+    Assert-True ($planoS4U -match 'nivel Limited') 'e sem -Elevado o principal sai com nível Limited'
+
+    <#
+        O QUE NÃO TEM MUTANTE, dito em vez de negado: a guarda '-Simular' em si.
+        Um mutante que a desligasse faria ESTA suíte registrar tarefa de verdade
+        na máquina de quem a roda. Teste não altera configuração de sistema de
+        ninguém, e um defeito que só se manifesta causando o dano não vale o
+        dano. A asserção abaixo pega a quebra depois de acontecida; ela não a
+        previne, e isso está escrito aqui em vez de ficar subentendido.
+    #>
+    <#
+        A consulta passa por cmd.exe com stderr descartado NA ORIGEM, e não por
+        '2>&1' aqui: stderr de comando nativo sob $ErrorActionPreference='Stop'
+        vira ErrorRecord e derruba a suíte inteira. Foi assim que sete asserções
+        de Test-Gate ficaram no vácuo, e a armadilha é a mesma aqui — 'tarefa
+        não encontrada' é justamente o desfecho que eu espero, e ele chega pelo
+        canal que mata o processo.
+    #>
+    & cmd.exe /c 'schtasks /query /tn "\WinMonitor\PatrolTesteSimulado" >nul 2>&1'
+    Assert-True ($LASTEXITCODE -ne 0) 'quatro simulações não deixaram tarefa nenhuma registrada'
+
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -238,6 +238,26 @@ $mutantes = @(
     @{ id='BL-X3';  nome='a regra le a chave que a sonda escreve'; arq='config\thresholds.json'
        de='"metric":  "dsk.unhealthy",'; para='"metric":  "dsk.doentes",'; suite='Test-Exam.ps1' }
 
+    <#
+        O X2 QUE FALTAVA - e a lista pulava de X1 para X3 sem que ninguem
+        notasse. Este e o enxerto do exame na raiz da avaliacao: o UNICO caminho
+        de producao que poe 'evt' e 'dsk' no objeto que o motor de regras le.
+
+        Medido pela decima primeira verificacao: descartar as duas chaves
+        deixava as OITO suites verdes, 822 de 822, e um 'throw' dentro do bloco
+        provava que nenhuma linha dali jamais executara sob teste. Em producao
+        isso desliga as duas regras de falha de hardware do projeto, e o
+        veredito continua "normal".
+
+        O Test-Exam AFIRMAVA que esta mutacao estava defendida. Ela nao estava:
+        aquele teste fazia o enxerto ele mesmo, com Add-Member. Testar a propria
+        imitacao do codigo nao e testar o codigo.
+    #>
+    @{ id='BL-X2';  nome='o enxerto do exame chega ao motor';     arq='src\Invoke-Rules.ps1'
+       de="if (`$k -in 'v', 'host', 'at', 'mode', 'coverage', 'complete') { continue }"
+       para="if (`$k -in 'v', 'host', 'at', 'mode', 'coverage', 'complete', 'dsk', 'evt') { continue }"
+       suite='Test-Drivers.ps1' }
+
     @{ id='A5';    nome='regra malformada conta como lacuna';     arq='src\WinMonitor.Rules.psm1'
        de='$lacunas = $semFonte.Count + $malformadas.Count + $semDado.Count'
        para='$lacunas = $semFonte.Count + $semDado.Count'; suite='Test-Rules.ps1' }
@@ -263,6 +283,18 @@ $mutantes = @(
     @{ id='BL-96a'; nome='suite que nao roda e INCONCLUSIVO';     arq='tools\Test-Mutantes.ps1'
        de='if ([string]::IsNullOrWhiteSpace($linha)) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
 
+    <#
+        A TERCEIRA PORTA DA MESMA SALA. Este arquivo ja defendia "silencio nao e
+        morte" (BL-96a) e "inconclusivo conta no veredito" (BL-96b), e deixava
+        aberta a do meio: VERDE NAO E MORTE.
+
+        Sem o ramo VIVO, a regua da regua vira uma maquina que so sabe anunciar
+        sucesso total - e as outras cinquenta travas passam a ser "defendidas"
+        por um instrumento incapaz de reprovar.
+    #>
+    @{ id='BL-96c'; nome='verde depois da mutacao e trava VIVA'; arq='tools\Test-Mutantes.ps1'
+       de="} elseif (`$linha -match ',\s*0\s+falhou') {"; para='} elseif ($false) {'; suite='Test-Gate.ps1' }
+
     @{ id='BL-96b'; nome='inconclusivo conta no veredito final';  arq='tools\Test-Mutantes.ps1'
        de='if ($vivos.Count -eq 0 -and $naoAplic.Count -eq 0 -and $inconclusivos.Count -eq 0) {'
        para='if ($vivos.Count -eq 0 -and $naoAplic.Count -eq 0) {'; suite='Test-Gate.ps1' }
@@ -277,18 +309,67 @@ $mutantes = @(
         ruido, que e o outro jeito de uma varredura morrer.
     #>
     @{ id='BL-97a'; nome='a varredura compara com caixa';         arq='tools\Find-ParamShadow.ps1'
-       de='if (($nomeV -ceq $nomeP)) { continue }'; para='if (($nomeV -eq $nomeP)) { continue }'; suite='Test-Gate.ps1' }
+       de='if ($simples -ceq $nomeP) { continue }'; para='if ($simples -eq $nomeP) { continue }'; suite='Test-Gate.ps1' }
 
     @{ id='BL-97b'; nome='mesma grafia nao e colisao';            arq='tools\Find-ParamShadow.ps1'
-       de='if (($nomeV -ceq $nomeP)) { continue }'; para='if ($false) { continue }'; suite='Test-Gate.ps1' }
+       de='if ($simples -ceq $nomeP) { continue }'; para='if ($false) { continue }'; suite='Test-Gate.ps1' }
 
     <#
         O terceiro jeito de a varredura morrer: acusar o que e legitimo. Sem o
         recuo, o escopo do script engole os corpos das funcoes e '$discos = 1'
         DENTRO de uma funcao vira colisao - e nao e: ali nasce variavel nova.
     #>
-    @{ id='BL-97d'; nome='o escopo do script para na funcao';     arq='tools\Find-ParamShadow.ps1'
-       de='if ($dentroDeFuncao) { continue }'; para='if ($false) { continue }'; suite='Test-Gate.ps1' }
+    <#
+        TODA FUNCAO E ESCOPO, tenha parametro ou nao. Sem isso, a atribuicao
+        dentro de uma funcao interna sobe para o escopo de quem a contem, e
+        'function A { param($Discos); function B { $discos = 1 } }' - que e
+        LEGITIMA - vira acusacao. Falso positivo e o outro jeito de a varredura
+        morrer: pelo relatorio que ninguem mais le.
+    #>
+    @{ id='BL-97d'; nome='funcao sem parametro tambem e escopo'; arq='tools\Find-ParamShadow.ps1'
+       de='              else { @() }'; para='              else { continue }'; suite='Test-Gate.ps1' }
+
+    <#
+        AS TRES FORMAS QUE A VARREDURA NAO VIA, cada uma medida executando o
+        PowerShell antes de virar teste. A de scriptblock estava EM USO na
+        producao deste projeto - Report.psm1, Laudo.psm1 (duas vezes), Rollup -
+        e a varredura passava limpa por cima das quatro ocorrencias.
+    #>
+    @{ id='BL-97e'; nome='parametro inline conta como parametro'; arq='tools\Find-ParamShadow.ps1'
+       de='elseif ($f.Parameters) { $f.Parameters }'; para='elseif ($false) { $f.Parameters }'; suite='Test-Gate.ps1' }
+
+    @{ id='BL-97f'; nome='prefixo script: alcanca o parametro';   arq='tools\Find-ParamShadow.ps1'
+       de="if (`$prefixo -eq 'script') {"; para='if ($false) {'; suite='Test-Gate.ps1' }
+
+    @{ id='BL-97g'; nome='scriptblock com param e escopo proprio'; arq='tools\Find-ParamShadow.ps1'
+       de='if (-not $sb.ScriptBlock) { continue }'; para='continue'; suite='Test-Gate.ps1' }
+
+    <#
+        FALHA FECHADA. A versao anterior estourava no Substring, a excecao ia
+        para stderr e ela declarava LIMPO com codigo 0 - havendo colisao real no
+        arquivo. Falha aberta e pior que trava nenhuma: ausencia ninguem confia,
+        falha aberta todo mundo confia.
+    #>
+    @{ id='BL-97h'; nome='arquivo ilegivel e vermelho';           arq='tools\Find-ParamShadow.ps1'
+       de='if (@($errosParse).Count -gt 0) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
+
+    <#
+        O ALCANCE DAS DUAS GUARDAS. Medido vivo pela decima primeira
+        verificacao: reduzir a guarda de LF aos modulos, faze-la pular tests e
+        tools, ou a varredura de sombra ignorar os modulos - as tres passavam
+        com o portao verde, porque cada cenario sabota UM arquivo e alcancar
+        aquele arquivo bastava. E a regra nascendo com o alcance do defeito que
+        a gerou, pela terceira vez nesta serie.
+    #>
+    @{ id='BL-99b'; nome='o piso de arquivos com CRLF vale';      arq='tests\Run-All.ps1'
+       de='if ($varridos.Count -lt $ArquivosCrlfMin) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
+
+    @{ id='BL-99c'; nome='o piso da varredura de sombra vale';    arq='tests\Run-All.ps1'
+       de='} elseif ([int]$mSom.Groups[1].Value -lt $ArquivosSombraMin) {'
+       para='} elseif ($false) {'; suite='Test-Gate.ps1' }
+
+    @{ id='BL-99d'; nome='sem contagem nao ha como conferir piso'; arq='tests\Run-All.ps1'
+       de='if (-not $mSom.Success) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
 
     @{ id='BL-97c'; nome='o portao reprova por sombra';           arq='tests\Run-All.ps1'
        de='if ($psom.ExitCode -ne 0) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
@@ -302,8 +383,43 @@ $mutantes = @(
     @{ id='BL-99';  nome='LF solto num script reprova';           arq='tests\Run-All.ps1'
        de='if ($lfSoltos.Count -gt 0) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
 
+    <#
+        O VERDE NAO PODE DEPENDER DE ONDE O PROJETO ESTA NO DISCO.
+
+        Write-Error passa pelo formatador, que quebra a mensagem em 120 colunas
+        numa posicao que depende do COMPRIMENTO DO CAMINHO do script. Medido: a
+        mesma arvore reprovava com caminho de 87 caracteres e passava com 70.
+        Faixa que reprova: 72 a 91. Um zip do GitHub descompactado como
+        '...\Projetos\WinMonitor-main' tem 76 e chegaria vermelho ao usuario.
+    #>
+    @{ id='BL-100'; nome='erro de uso sai cru, sem formatador';   arq='tests\Run-All.ps1'
+       de='[Console]::Error.WriteLine("ERRO: $Mensagem")'; para='Write-Error $Mensagem'; suite='Test-Gate.ps1' }
+
     @{ id='BL-98';  nome='-BateriaPath confinado a afericao';     arq='tests\Run-All.ps1'
        de='if ($BateriaPath -and -not $SuiteDir) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
+
+    <#
+        O QUE O REGISTRO PROMETE AO DONO DA MAQUINA.
+
+        Registrei a ronda em modo Interactive sem dizer que isso faz o Windows
+        piscar uma janela de console por minuto na tela dele. Ele notou sozinho
+        no dia seguinte e teve de perguntar o que era. Ressalva sem teste some
+        no commit seguinte, e some justamente porque ninguem sente falta dela.
+    #>
+    <#
+        O mutante ataca a DEFINICAO da ressalva, nao um dos lugares que a
+        imprimem. Os tres caminhos - simulacao, registro na pasta e recuo para a
+        raiz - emitem a mesma variavel, e so o primeiro e observavel por teste
+        (registrar tarefa de verdade nao e coisa que suite faz). Mutar um dos
+        outros dois produziria mutante VIVO com aparencia de defesa; mutar a
+        origem cobre os tres de uma vez, que e o que a promessa vale.
+    #>
+    @{ id='BL-P1'; nome='o modo interativo declara a piscada';    arq='tools\Register-PatrolTask.ps1'
+       de="`$avisoPiscar = 'RESSALVA:"; para="`$avisoPiscar = ''; `$ignorado = 'RESSALVA:"; suite='Test-Drivers.ps1' }
+
+    @{ id='BL-P2'; nome='-Elevado muda o nivel de execucao';      arq='tools\Register-PatrolTask.ps1'
+       de="`$nivel = if (`$Elevado) { 'Highest' } else { 'Limited' }"
+       para="`$nivel = 'Limited'"; suite='Test-Drivers.ps1' }
 
     @{ id='BL-4b'; nome='recuo de exam.probes ausente';           arq='src\Invoke-Exam.ps1'
        de='$sondas = @($cfg.exam.probes | Where-Object { $_ -and $_.name -and $_.key })'
