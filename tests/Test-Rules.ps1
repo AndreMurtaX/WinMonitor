@@ -484,6 +484,33 @@ try {
     Assert-True ($null -ne $rIdVazio) 'regra com id vazio também não mata o motor'
 
     <#
+        DUAS REGRAS SEM id NÃO PODEM COLAPSAR NUMA LACUNA SÓ — uma sumiria em
+        silêncio, que é o defeito que esta camada inteira existe para não ter.
+        O índice na chave é o que as separa.
+    #>
+    $duasSemId = New-Rules ('{"version":1,"severityScale":["normal","observar","agir"],"rules":[' +
+        '{"kind":"absolute","subsystem":"cpu","severity":"observar","claim":"a","metric":"cpu.util.p95","operator":"gt","value":90,' + $FO + '},' +
+        '{"kind":"absolute","subsystem":"cpu","severity":"observar","claim":"b","metric":"cpu.util.p95","operator":"gt","value":80,' + $FO + '}]}')
+    # try/catch: com a trava revertida o motor LANÇA, e sem isto a suíte inteira
+    # morre sem imprimir resumo — a bateria classificaria como INCONCLUSIVO.
+    $rDuas = $null
+    try { $rDuas = Invoke-WMRules -Rollup $rollupSimples -Rules $duasSemId } catch { }
+    Assert-True ($null -ne $rDuas) 'duas regras sem id não matam o motor'
+    if ($null -ne $rDuas) {
+        Assert-Equal 2 (@(Get-WMNodeKeys $rDuas.coverage.malformed).Count) 'duas regras sem id viram DUAS lacunas, não uma'
+    }
+
+    <#
+        E o nome da lacuna não pode conter '#': ele é o separador de campo do
+        protocolo de cobertura, e a guarda do laudo separa por ele. Com '#' no
+        nome, o laudo ficava estruturalmente inaprovável — medido um módulo
+        adiante, em Test-Laudo.
+    #>
+    foreach ($k in @(Get-WMNodeKeys $rDuas.coverage.malformed)) {
+        Assert-True (-not ($k -match '#')) "a lacuna sintetica '$k' nao usa o separador de campo"
+    }
+
+    <#
         ZERO REGRA AVALIADA NÃO É COBERTURA COMPLETA.
 
         Medido: tabela sem a chave 'rules', ou com 'rules': [], devolvia

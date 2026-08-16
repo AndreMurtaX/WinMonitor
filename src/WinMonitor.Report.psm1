@@ -133,11 +133,44 @@ function Get-WMCollectionHealth {
         Uma ressalva que aparece todo dia de madrugada é ruído, e ruído é o que
         faz alguém parar de ler.
     #>
+    <#
+        O DIA DECORRIDO É O DIA LOCAL, porque o arquivo é nomeado em hora local.
+
+        A primeira versão media o decorrido em UTC contra um arquivo cujo nome
+        vem de Get-WMDayId, que usa hora LOCAL. Em UTC-3, com a ronda sem perder
+        uma única amostra, o resultado medido:
+
+            00:30 local   30 amostras, 210 "esperadas"  ->  14,3%  ressalva FALSA
+            22:30 local  1350 amostras,  90 "esperadas"  -> 1500%
+
+        Falso nas duas pontas: de madrugada acusa escassez que não existe, e das
+        21h à meia-noite o denominador desaba e a escassez REAL não tem como
+        disparar. A janela de alarme falso caiu de 6 h para 1 h — magnitude
+        menor, mesma classe. É o critério com que eu mesmo reprovei outro
+        defeito, aplicado a este.
+
+        O teste não pegou porque a fixture escrevia 'at' em Z e nomeava o
+        arquivo pelo dia UTC — forma que o coletor NUNCA produz. Mecânica certa
+        sobre dado falso.
+
+        E a comparação só faz sentido se o arquivo for o de HOJE: comparar o
+        arquivo de ontem com o relógio de agora produzia percentual sem
+        significado.
+    #>
     if ($saude.expectedPerDay -gt 0) {
-        $minutosDoDia = [Math]::Max(1.0, ($NowUtc - $NowUtc.Date).TotalMinutes)
-        $esperadasAteAgora = [Math]::Max(1.0, $minutosDoDia / [Math]::Max(1, $IntervalMinutes))
-        $saude.expectedSoFar   = [int]$esperadasAteAgora
-        $saude.lastDayCoverage = Get-WMRound (100.0 * $linhas.Count / $esperadasAteAgora) 1
+        $agoraLocal = $NowUtc.ToLocalTime()
+        $ehHoje = ($ultimo.BaseName -eq $agoraLocal.ToString('yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture))
+
+        if ($ehHoje) {
+            $minutosDoDia      = [Math]::Max(1.0, ($agoraLocal - $agoraLocal.Date).TotalMinutes)
+            $esperadasAteAgora = [Math]::Max(1.0, $minutosDoDia / [Math]::Max(1, $IntervalMinutes))
+            $saude.expectedSoFar   = [int]$esperadasAteAgora
+            $saude.lastDayCoverage = Get-WMRound (100.0 * $linhas.Count / $esperadasAteAgora) 1
+        } else {
+            # Dia fechado: o denominador é o dia inteiro, não o relógio de agora.
+            $saude.expectedSoFar   = [int]$saude.expectedPerDay
+            $saude.lastDayCoverage = Get-WMRound (100.0 * $linhas.Count / $saude.expectedPerDay) 1
+        }
     }
 
     <#

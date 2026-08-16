@@ -340,7 +340,7 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     Assert-True (Test-WMLaudoFindings -Laudo $limpo -Package $pacV).ok 'pacote sem achados, laudo sem achados: passa'
 
     # Relatar os achados que existem, passa.
-    $fiel = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a","action":"b"},{"ruleId":"R-DISK-SPACE-LOW","reading":"c","action":"d"}]}'
+    $fiel = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a placa esta mais quente","action":"acompanhar"},{"ruleId":"R-DISK-SPACE-LOW","reading":"pouco espaco livre","action":"liberar espaco"}]}'
     Assert-True (Test-WMLaudoFindings -Laudo $fiel -Package $pac).ok 'relatar os achados do pacote passa'
 
     <#
@@ -354,7 +354,7 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
         Das duas falhas possíveis esta é a pior. Achado inventado faz alguém
         olhar a máquina à toa; achado apagado faz ninguém olhar.
     #>
-    $menos = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a","action":"b"}]}'
+    $menos = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a placa esta mais quente","action":"acompanhar"}]}'
     $fm = Test-WMLaudoFindings -Laudo $menos -Package $pac
     Assert-True (-not $fm.ok) 'omitir um achado do pacote é rejeitado'
     Assert-True ((@($fm.omitted) -join ' ') -match 'R-DISK-SPACE-LOW') 'e o achado apagado é nominado'
@@ -370,7 +370,7 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
         ocorrências de uma regra do que o pacote trouxe — é inflar achado com
         um ruleId que passa no teste de pertinência.
     #>
-    $inflado = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a","action":"b"},{"ruleId":"R-GPU-TEMP-DRIFT","reading":"c","action":"d"}]}'
+    $inflado = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a placa esta mais quente","action":"acompanhar"},{"ruleId":"R-GPU-TEMP-DRIFT","reading":"pouco espaco livre","action":"liberar espaco"}]}'
     $f2 = Test-WMLaudoFindings -Laudo $inflado -Package $pac
     Assert-True (-not $f2.ok) 'duplicar um achado que o pacote trouxe uma vez é rejeitado'
 
@@ -395,7 +395,7 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     Assert-True (Test-WMLaudoFindings -Laudo $inflado -Package $pacD).ok 'duas placas, mesma regra duas vezes: passa'
 
     # Achado sem ruleId nenhum não escapa por omissão.
-    $semId = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"","reading":"a","action":"b"}]}'
+    $semId = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"","reading":"a placa esta mais quente","action":"acompanhar"}]}'
     Assert-True (-not (Test-WMLaudoFindings -Laudo $semId -Package $pac).ok) 'achado sem ruleId é rejeitado'
 
     <#
@@ -444,6 +444,36 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     Assert-Equal 0 (@($fi.omitted).Count)  'nem de apagado: o laudo o relatou'
     Assert-Equal 1 (@($fi.incomplete).Count) 'ele entra na categoria própria'
     Assert-True ((@($fi.incomplete) -join ' ') -match 'falta preencher: action') 'e a mensagem PEDE o campo que falta'
+
+    <#
+        READING TAMBÉM, e não só action. A fixture anterior só tinha action
+        vazio — a metade nova da categoria era indefesa, e o mutante que eu
+        escrevi não a alcançava porque mexia só na linha do 'ok ='.
+    #>
+    $semReading = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"","action":"acompanhar"},{"ruleId":"R-DISK-SPACE-LOW","reading":"pouco espaco","action":"liberar"}]}'
+    $fr = Test-WMLaudoFindings -Laudo $semReading -Package $pac
+    Assert-True (-not $fr.ok) 'achado sem reading é rejeitado'
+    Assert-True ((@($fr.incomplete) -join ' ') -match 'falta preencher: reading') 'e a mensagem nomeia reading'
+    Assert-Equal 0 (@($fr.invented).Count) 'sem acusar invenção'
+
+    <#
+        PREENCHIMENTO DE FACHADA. O prompt escrito no commit anterior prometia
+        que ponto, traço e 'n/a' seriam recusados, e a guarda usava só
+        IsNullOrWhiteSpace — aceitava os quatro. É a lição que esta camada já
+        aprendeu ao abolir a prosa em notVerified, reintroduzida no campo novo.
+        Entre o prompt e a guarda, quem vale é a guarda.
+    #>
+    foreach ($fachada in '.', '-', 'n/a', 'N/A', '...', '?', 'null', 'nada') {
+        $l = New-Data (('{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a placa esta quente","action":"FACHADA"},{"ruleId":"R-DISK-SPACE-LOW","reading":"pouco espaco","action":"liberar"}]}').Replace('FACHADA', $fachada))
+        Assert-True (-not (Test-WMLaudoFindings -Laudo $l -Package $pac).ok) "action '$fachada' não é ação: é fachada"
+
+        # E o MESMO no campo reading: a bateria mostrou que só action estava
+        # defendido, então metade da trava vivia sem quem a segurasse.
+        $l2 = New-Data (('{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"FACHADA","action":"acompanhar"},{"ruleId":"R-DISK-SPACE-LOW","reading":"pouco espaco","action":"liberar"}]}').Replace('FACHADA', $fachada))
+        Assert-True (-not (Test-WMLaudoFindings -Laudo $l2 -Package $pac).ok) "reading '$fachada' não é leitura: é fachada"
+    }
+    Assert-True (Test-WMTextoSubstantivo 'ok') 'mas texto curto de verdade passa'
+    Assert-True (-not (Test-WMTextoSubstantivo '   ')) 'e branco não'
 
     # Preenchido, o mesmo laudo passa — a guarda não cobra nada além disso.
     $completo = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a placa esta mais quente","action":"acompanhar na proxima ronda"},{"ruleId":"R-DISK-SPACE-LOW","reading":"pouco espaco","action":"liberar"}]}'
@@ -513,7 +543,7 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     Assert-True (Test-WMLaudoShape -Laudo $certo -Package $pacV).ok 'declarar a lacuna e não supor nada passa'
 
     # Com achados no pacote, hipótese é legítima — o campo não vira letra morta.
-    $comAchado = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a","action":"b"}],"observations":["o calor pode vir do ambiente"]}'
+    $comAchado = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a placa esta mais quente","action":"acompanhar"}],"observations":["o calor pode vir do ambiente"]}'
     Assert-True (Test-WMLaudoShape -Laudo $comAchado -Package $pac).ok 'com achado, a hipótese continua permitida'
 
     # Cobertura COMPLETA não exige notVerified.
@@ -582,7 +612,7 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     Assert-True ((@($si.missing) -join ' ') -match 'R-SMART-DISK-FAILING') 'e a regra inventada é nominada'
 
     # Regra AVALIADA declarada como não verificada: contradição dentro do laudo.
-    $contradiz = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"},{"ruleId":"R-GPU-TEMP-DRIFT","note":"n"}],"changedSinceLast":"","findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a","action":"b"},{"ruleId":"R-DISK-SPACE-LOW","reading":"c","action":"d"}],"observations":[]}'
+    $contradiz = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"},{"ruleId":"R-GPU-TEMP-DRIFT","note":"n"}],"changedSinceLast":"","findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a placa esta mais quente","action":"acompanhar"},{"ruleId":"R-DISK-SPACE-LOW","reading":"pouco espaco livre","action":"liberar espaco"}],"observations":[]}'
     Assert-True (-not (Test-WMLaudoShape -Laudo $contradiz -Package $pac).ok) 'regra que FOI avaliada não pode ser declarada não verificada'
 
     <#
@@ -643,6 +673,45 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
         $nu = Test-WMLaudoNumbers -Text (Get-WMLaudoText -Laudo $l) -Package $pacSfx
         Assert-True ($sh.ok -and $nu.ok) ("declarar a lacuna como '$decl' passa nas duas guardas (órfãos: " + ($nu.orphans -join ', ') + ')')
     }
+
+    <#
+        PROCEDÊNCIA DE MUTANTE, aplicada: o defeito nasceu em Rules.psm1 e
+        aparecia AQUI, um módulo adiante.
+
+        A lacuna sintética de regra sem id chamava-se "(regra #N sem id)". O '#'
+        é o SEPARADOR DE CAMPO deste protocolo — a chave de lacuna é
+        'id#caminho' e as guardas separam por ele. Consequência medida: a guarda
+        passava a exigir a lacuna '(regra ' com espaço no fim, enquanto o lado da
+        declaração aplica Trim(). NENHUMA grafia casava, e o laudo ficava
+        estruturalmente inaprovável — as duas tentativas queimavam com duas
+        mensagens contraditórias sobre o mesmo item.
+
+        O teste que existia parava na fronteira do módulo de regras ("não mata o
+        motor"), e era verdadeiro e insuficiente. Este assevera a consequência
+        que o comentário prometia: "e o dia continua".
+    #>
+    <#
+        PROCEDÊNCIA DE FIXTURE: a lacuna vem do MOTOR REAL, não escrita à mão.
+
+        A primeira versão deste teste digitava a chave "(regra sem id na posicao
+        2)" na fixture — e por isso continuava verde mesmo revertendo o nome em
+        Rules.psm1: o teste media a minha digitação, não o código. Foi exatamente
+        o que a bateria acusou.
+    #>
+    $tabelaSemId = New-Data '{"version":1,"severityScale":["normal","observar","agir"],"rules":[{"kind":"absolute","subsystem":"cpu","severity":"observar","claim":"x","metric":"cpu.util.p95","operator":"gt","value":90,"source":{"kind":"policy","text":"t","url":"","verifiedAt":"2026-08-15"}}]}'
+    $comLacunaSintetica = $null
+    try { $comLacunaSintetica = Invoke-WMRules -Rollup (New-Data '{"v":1,"day":"2026-08-15","host":"T","cpu":{"util":{"p95":10}}}') -Rules $tabelaSemId } catch { }
+    Assert-True ($null -ne $comLacunaSintetica) 'o motor produz achados mesmo com regra sem id'
+    $pacSint = New-WMLaudoPackage -Findings $comLacunaSintetica
+
+    $chave = @(Get-WMNodeKeys $pacSint.coverage.malformed)[0]
+    Assert-True (-not ($chave -match '#')) 'o nome sintético NÃO pode conter o separador de campo'
+
+    $declarando = New-Data ('{"summary":"Nada a relatar.","changedSinceLast":"","findings":[],"observations":[],"notVerified":[{"ruleId":"' + $chave + '","note":"regra sem identificacao na tabela"}]}')
+    $shSint = Test-WMLaudoShape   -Laudo $declarando -Package $pacSint
+    $nuSint = Test-WMLaudoNumbers -Text (Get-WMLaudoText -Laudo $declarando) -Package $pacSint
+    Assert-True $shSint.ok ('um laudo honesto CONSEGUE declarar a lacuna sintética: ' + ($shSint.missing -join ' ; '))
+    Assert-True $nuSint.ok ('e ela não vira número inventado (órfãos: ' + ($nuSint.orphans -join ', ') + ')')
 
     # Espaço sobrando no ruleId não pode virar duas mensagens ilegíveis.
     $comEspaco = New-Data '{"summary":"x","changedSinceLast":"","findings":[],"observations":[],"notVerified":[{"ruleId":" R-GPU-TEMP-SPEC-3080 ","note":"n"}]}'

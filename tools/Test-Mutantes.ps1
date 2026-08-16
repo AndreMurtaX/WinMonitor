@@ -70,6 +70,37 @@ $mutantes = @(
     @{ id='BL-5';  nome='regra sem id não mata o motor';          arq='src\WinMonitor.Rules.psm1'
        de='if ([string]::IsNullOrWhiteSpace($rid)) {'; para='if ($false) {'; suite='Test-Rules.ps1' }
 
+    <#
+        PROCEDÊNCIA DE MUTANTE: este assevera no módulo MAIS DISTANTE que
+        consome o resultado, e não na linha do diff.
+
+        O mutante acima prova que o motor não morre. Ele parava na fronteira do
+        módulo — e o defeito estava um módulo adiante: o nome sintético que eu
+        escolhi continha '#', o separador de campo do protocolo, e o laudo
+        ficava ESTRUTURALMENTE INAPROVÁVEL. "Não mata o motor" era verdade e
+        insuficiente; a consequência escrita no comentário era "e o dia
+        continua", e é ELA que precisa de mutante.
+    #>
+    @{ id='BL-5b'; nome='o nome sintético não quebra o laudo';    arq='src\WinMonitor.Rules.psm1'
+       de='"(regra sem id na posicao $indice)"'; para='"(regra #$indice sem id)"'; suite='Test-Laudo.ps1' }
+
+    @{ id='BL-5c'; nome='duas regras sem id não colapsam';        arq='src\WinMonitor.Rules.psm1'
+       de='"(regra sem id na posicao $indice)"'; para='"(regra sem id)"'; suite='Test-Rules.ps1' }
+
+    @{ id='BL-Ea'; nome='campo de fachada é recusado';            arq='src\WinMonitor.Laudo.psm1'
+       de='if (-not (Test-WMTextoSubstantivo $a.reading)) { $faltantes += ''reading'' }'
+       para='if ([string]::IsNullOrWhiteSpace([string]$a.reading)) { $faltantes += ''reading'' }'; suite='Test-Laudo.ps1' }
+
+    @{ id='BL-Eb'; nome='action de fachada é recusado';           arq='src\WinMonitor.Laudo.psm1'
+       de='if (-not (Test-WMTextoSubstantivo $a.action))  { $faltantes += ''action'' }'
+       para='if ([string]::IsNullOrWhiteSpace([string]$a.action))  { $faltantes += ''action'' }'; suite='Test-Laudo.ps1' }
+
+    @{ id='BL-B';  nome='o dia decorrido é o dia LOCAL';          arq='src\WinMonitor.Report.psm1'
+       de='$agoraLocal = $NowUtc.ToLocalTime()'; para='$agoraLocal = $NowUtc'; suite='Test-Report.ps1' }
+
+    @{ id='BL-Cb'; nome='o frescor usa o MAIOR carimbo do passado'; arq='src\WinMonitor.Report.psm1'
+       de='$ultimoReal = ($passado | Sort-Object)[-1]'; para='$ultimoReal = $passado[0]'; suite='Test-Report.ps1' }
+
     @{ id='BL-6';  nome='zero regra avaliada = cobertura incompleta'; arq='src\WinMonitor.Rules.psm1'
        de='if (@($avaliadas).Count -eq 0) {'; para='if ($false) {'; suite='Test-Rules.ps1' }
 
@@ -84,9 +115,13 @@ $mutantes = @(
        de='$esperadasAteAgora = [Math]::Max(1.0, $minutosDoDia / [Math]::Max(1, $IntervalMinutes))'
        para='$esperadasAteAgora = [double]$saude.expectedPerDay'; suite='Test-Report.ps1' }
 
-    @{ id='BL-4a'; nome='o portão lê a saída com OEM';            arq='tests\Run-All.ps1'
-       de='-Raw -Encoding OEM -ErrorAction SilentlyContinue'
-       para='-Raw -Encoding UTF8 -ErrorAction SilentlyContinue'; suite='Test-Gate.ps1' }
+    @{ id='BL-4a'; nome='o portão lê o stdout com OEM';           arq='tests\Run-All.ps1'
+       de='(Get-Content -LiteralPath $tmpOut -Raw -Encoding OEM -ErrorAction SilentlyContinue)'
+       para='(Get-Content -LiteralPath $tmpOut -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)'; suite='Test-Gate.ps1' }
+
+    @{ id='BL-4a2'; nome='o portão lê o stderr com OEM';          arq='tests\Run-All.ps1'
+       de='(Get-Content -LiteralPath ($tmpOut + ''.err'') -Raw -Encoding OEM -ErrorAction SilentlyContinue)'
+       para='(Get-Content -LiteralPath ($tmpOut + ''.err'') -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)'; suite='Test-Gate.ps1' }
 
     @{ id='BL-4b'; nome='recuo de exam.probes ausente';           arq='src\Invoke-Exam.ps1'
        de='$sondas = @($cfg.exam.probes | Where-Object { $_ -and $_.name -and $_.key })'
@@ -100,8 +135,9 @@ $mutantes = @(
 if ($Somente) { $mutantes = @($mutantes | Where-Object { $_.id -like "*$Somente*" }) }
 if ($mutantes.Count -eq 0) { Write-Error "nenhum mutante casa '$Somente'"; exit 2 }
 
-$vivos    = New-Object System.Collections.ArrayList
-$naoAplic = New-Object System.Collections.ArrayList
+$vivos         = New-Object System.Collections.ArrayList
+$naoAplic      = New-Object System.Collections.ArrayList
+$inconclusivos = New-Object System.Collections.ArrayList
 
 foreach ($m in $mutantes) {
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('wm-mut-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -132,7 +168,23 @@ foreach ($m in $mutantes) {
                      -File (Join-Path $tmp ('tests\' + $m.suite)) 2>&1 | Out-String
         $linha = (($saida -split "`n" | Select-String 'passou,').Line -join '').Trim()
 
-        if ($linha -match ',\s*0\s+falhou') {
+        <#
+            SILÊNCIO NÃO É MORTE — e esta ferramenta contava como se fosse.
+
+            Sem linha de resumo, a comparação com ',0 falhou' dava falso e o
+            código caía no ramo 'morto'. Medido: apontando o mutante para uma
+            suíte inexistente, ela imprimia "morto" com a coluna vazia e depois
+            "TODOS OS MUTANTES MORRERAM", saindo com zero. Nada tinha rodado.
+
+            É o defeito A-06 deste projeto — etapa que não roda contando como
+            verde — dentro da ferramenta construída para acabar com ele. Suíte
+            que não chega ao fim é INCONCLUSIVO, e inconclusivo é vermelho:
+            não sei se a trava é defendida, e não saber não é aprovar.
+        #>
+        if ([string]::IsNullOrWhiteSpace($linha)) {
+            [void]$inconclusivos.Add("$($m.id): $($m.suite) não imprimiu resumo — a suíte não rodou até o fim")
+            "  ?? INCONCLUSIVO {0,-6} {1}" -f $m.id, $m.nome
+        } elseif ($linha -match ',\s*0\s+falhou') {
             [void]$vivos.Add("$($m.id) $($m.nome) — $($m.suite) ficou verde com a trava revertida")
             "  VIVO   {0,-6} {1,-48} {2}" -f $m.id, $m.nome, $linha
         } else {
@@ -144,11 +196,12 @@ foreach ($m in $mutantes) {
 }
 
 ""
-if ($vivos.Count -eq 0 -and $naoAplic.Count -eq 0) {
+if ($vivos.Count -eq 0 -and $naoAplic.Count -eq 0 -and $inconclusivos.Count -eq 0) {
     "TODOS OS $($mutantes.Count) MUTANTES MORRERAM — cada trava tem quem a defenda."
     exit 0
 }
-foreach ($v in $vivos)    { "  x $v" }
-foreach ($n in $naoAplic) { "  x $n" }
-"$($vivos.Count) trava(s) indefesa(s), $($naoAplic.Count) âncora(s) obsoleta(s)"
+foreach ($v in $vivos)         { "  x $v" }
+foreach ($n in $naoAplic)      { "  x $n" }
+foreach ($i in $inconclusivos) { "  x $i" }
+"$($vivos.Count) trava(s) indefesa(s), $($naoAplic.Count) âncora(s) obsoleta(s), $($inconclusivos.Count) inconclusivo(s)"
 exit 1

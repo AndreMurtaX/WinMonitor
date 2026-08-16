@@ -66,17 +66,22 @@ param(
         qualquer teste, em qualquer configuração. Trava que a costura de
         verificação não consegue exercitar é trava que ninguém sabe se funciona.
     #>
-    [int]$TotalTimeoutSec = 1800
+    [int]$TotalTimeoutSec = 1800,
+    <#
+        -Rapido pula a bateria de mutacao, que recopia o projeto por mutante e
+        leva minutos. Quem pula precisa dizer que pulou, e o portao diz.
+    #>
+    [switch]$Rapido
 )
 
 $suites = @(
     @{ file = 'Test-Rollup.ps1';      min = 147 }
-    @{ file = 'Test-Rules.ps1';       min = 144 }
-    @{ file = 'Test-Laudo.ps1';       min = 131 }
+    @{ file = 'Test-Rules.ps1';       min = 148 }
+    @{ file = 'Test-Laudo.ps1';       min = 156 }
     @{ file = 'Test-LaudoDriver.ps1'; min = 37  }
-    @{ file = 'Test-Report.ps1';      min = 80  }
+    @{ file = 'Test-Report.ps1';      min = 85  }
     @{ file = 'Test-Exam.ps1';        min = 52  }
-    @{ file = 'Test-Gate.ps1';        min = 38  }
+    @{ file = 'Test-Gate.ps1';        min = 39  }
     @{ file = 'Test-Drivers.ps1';     min = 56  }
 )
 
@@ -303,6 +308,32 @@ foreach ($s in $suites) {
 # propriedade de objeto — e falha em vez de devolver zero.
 $totalEsperado = 0
 foreach ($s in $suites) { $totalEsperado += [int]$s.min }
+
+<#
+    A BATERIA DE MUTACAO ENTRA NO PORTAO.
+
+    Ela e a regua da regua: prova que cada trava tem quem a defenda. E ficava
+    fora de tudo - Run-All nao a citava, a varredura so cobre tests\Test-*.ps1,
+    e o README nao a mencionava. Ou seja, a ferramenta anti-"defesa que so existe
+    quando alguem lembra" era, ela propria, uma defesa que so existia quando
+    alguem lembrava. Medido pela verificacao, nao temido.
+#>
+if (-not $Rapido -and -not $SuiteDir) {
+    ""
+    "##################  bateria de mutacao  ##################"
+    $bat = Join-Path (Split-Path -Parent $PSScriptRoot) 'tools\Test-Mutantes.ps1'
+    if (-not (Test-Path -LiteralPath $bat)) {
+        [void]$falhas.Add('tools\Test-Mutantes.ps1 nao existe: nada prova que as travas sao defendidas')
+    } else {
+        $saidaBat = & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $bat 2>&1 | Out-String
+        $codBat = $LASTEXITCODE
+        if ($Quiet) { ($saidaBat -split "`n" | Where-Object { $_ -match 'MUTANTES|indefesa|VIVO|INCONCLUSIVO' }) -join "`n" } else { $saidaBat }
+        if ($codBat -ne 0) { [void]$falhas.Add("bateria de mutacao: ha trava indefesa ou inconclusiva (codigo $codBat)") }
+    }
+} elseif ($Rapido) {
+    ""
+    "(bateria de mutacao PULADA por -Rapido: o verde abaixo nao diz nada sobre travas indefesas)"
+}
 
 ""
 "total de testes que passaram: $totalOk   (soma dos pisos: $totalEsperado)"

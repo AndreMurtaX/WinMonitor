@@ -125,6 +125,21 @@ try {
     Assert-Equal 2 $h.minutesSinceLast 'e o frescor vem da amostra mais recente que NÃO está no futuro'
 
     <#
+        E O FRESCOR VEM DO MAIOR CARIMBO DO PASSADO, não do primeiro que
+        aparecer. Relógio corrigido para trás produz arquivo FORA DE ORDEM
+        cronológica — que é o cenário deste próprio grupo — e pegar o primeiro
+        item da lista dava alarme falso de ronda parada numa coleta saudável.
+
+        A verificação mediu a diferença: com passado embaralhado, o código certo
+        dá 5 min e o errado dá 35, cruzando o limite de 30.
+    #>
+    $foraDeOrdem = @((Amostra '2026-08-15T17:25:00Z'), (Amostra '2026-08-15T17:55:00Z'),
+                     (Amostra '2026-08-15T17:30:00Z'), (Amostra '2026-08-15T18:02:00Z'))
+    $h = Get-WMCollectionHealth -PatrolDir (New-PatrolDir 'foraDeOrdem' $foraDeOrdem) -NowUtc $AGORA
+    Assert-True $h.ok 'passado fora de ordem cronológica NÃO vira alarme falso'
+    Assert-Equal 5 $h.minutesSinceLast 'o frescor vem do MAIOR carimbo do passado, não do primeiro da lista'
+
+    <#
         O caso que a folga escondia: ronda parada, mas com um carimbo pouco
         adiantado. Antes: ok=True e "a ronda está viva". Agora o adiantamento
         deixa de ser prova e a parada aparece.
@@ -156,13 +171,71 @@ try {
         deixava de ser falsa. Ressalva que aparece todo dia é ruído, e ruído faz
         alguém parar de ler.
     #>
-    $treHoras = [datetime]::Parse('2026-08-15T03:00:00Z', [System.Globalization.CultureInfo]::InvariantCulture,
-                                  [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
-    $cheio = @(1..180 | ForEach-Object { Amostra ("2026-08-15T{0:00}:{1:00}:00Z" -f [int](($_ - 1) / 60), (($_ - 1) % 60)) })
-    $h = Get-WMCollectionHealth -PatrolDir (New-PatrolDir 'madrugada' $cheio) -NowUtc $treHoras
-    Assert-True $h.ok 'às 03:00, com todas as amostras do período, a coleta é saudável'
-    Assert-True (-not ($h.reason -match 'amostras esperadas')) 'e NÃO declara escassez: 180 de 180 esperadas até agora'
-    Assert-Equal 180 $h.expectedSoFar 'o esperado é o do dia DECORRIDO, não o do dia inteiro'
+<#
+        PROCEDÊNCIA DE FIXTURE: o carimbo sai de Get-WMTimestamp e o nome do
+        arquivo de Get-WMDayId — as MESMAS funções da produção. Nada escrito à
+        mão.
+
+        Esta regra sozinha teria pego o defeito que a verificação encontrou. A
+        fixture anterior escrevia 'at' como "...Z" e nomeava o arquivo pelo dia
+        UTC; o coletor NUNCA produz isso — Get-WMTimestamp emite offset local e
+        Get-WMDayId usa data local. O código então misturava dia local (nome do
+        arquivo) com relógio UTC (decorrido), e em UTC-3, com a ronda sem perder
+        uma amostra sequer:
+
+            00:30 local    30 amostras, 210 "esperadas"  ->   14,3%  falso
+            22:30 local  1350 amostras,  90 "esperadas"  -> 1500%
+
+        Falso nas duas pontas: escassez inventada de madrugada, e das 21h à
+        meia-noite a escassez REAL não tinha como disparar. O teste era mecânica
+        certa sobre dado falso — verde porque a fixture assumia local == UTC.
+    #>
+    $hojeLocal = Get-WMDayId
+    $agoraLocal = Get-Date
+    $dirHoje = Join-Path $tmp 'procedencia'
+    New-Item -ItemType Directory -Path $dirHoje -Force | Out-Null
+
+    # Uma amostra por minuto desde a meia-noite LOCAL até agora, sem buracos.
+    $decorridos = [int](($agoraLocal - $agoraLocal.Date).TotalMinutes)
+    $linhasHoje = @(0..$decorridos | ForEach-Object {
+        $t = $agoraLocal.Date.AddMinutes($_)
+        '{"v":1,"host":"T","at":"' + $t.ToString('yyyy-MM-ddTHH:mm:ss.fffzzz', [System.Globalization.CultureInfo]::InvariantCulture) + '","cpu":{"util":3}}'
+    })
+    [System.IO.File]::WriteAllLines((Join-Path $dirHoje "$hojeLocal.jsonl"), $linhasHoje, (New-Object System.Text.UTF8Encoding($false)))
+
+    $h = Get-WMCollectionHealth -PatrolDir $dirHoje -NowUtc ([datetime]::UtcNow)
+    Assert-True $h.ok 'ronda completa desde a meia-noite local: coleta saudável'
+    Assert-True (-not ($h.reason -match 'amostras esperadas')) 'e NÃO declara escassez, a qualquer hora do dia'
+    Assert-True ($h.lastDayCoverage -ge 90 -and $h.lastDayCoverage -le 115) ("cobertura perto de 100%, não 14% nem 1500% (veio {0}%)" -f $h.lastDayCoverage)
+
+    <#
+        HORA EXPLÍCITA, não o relógio de parede.
+
+        O teste acima depende de que horas são quando ele roda: perto da
+        meia-noite UTC, misturar fuso quase não muda o número, e a trava passa
+        despercebida. A bateria mostrou isso — o mutante sobrevivia dependendo
+        da hora da execução.
+
+        Aqui a hora é escolhida para FORÇAR a divergência: 23:00 local. Em
+        qualquer fuso diferente de UTC, o decorrido local (1380 min) e o
+        decorrido UTC são números muito distantes, e a mistura fica visível.
+    #>
+    $localAlvo = (Get-Date).Date.AddDays(-0).AddHours(23)
+    $utcAlvo   = $localAlvo.ToUniversalTime()
+    $diaAlvo   = $localAlvo.ToString('yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+    $dirNoite  = Join-Path $tmp 'fusoExplicito'
+    New-Item -ItemType Directory -Path $dirNoite -Force | Out-Null
+
+    $linhasNoite = @(0..1379 | ForEach-Object {
+        $t = $localAlvo.Date.AddMinutes($_)
+        '{"v":1,"host":"T","at":"' + $t.ToString('yyyy-MM-ddTHH:mm:ss.fffzzz', [System.Globalization.CultureInfo]::InvariantCulture) + '","cpu":{"util":3}}'
+    })
+    [System.IO.File]::WriteAllLines((Join-Path $dirNoite "$diaAlvo.jsonl"), $linhasNoite, (New-Object System.Text.UTF8Encoding($false)))
+
+    $h = Get-WMCollectionHealth -PatrolDir $dirNoite -NowUtc $utcAlvo
+    Assert-Equal 1380 $h.expectedSoFar 'às 23:00 LOCAL, o esperado é 1380 — o decorrido do dia local'
+    Assert-True ($h.lastDayCoverage -ge 95 -and $h.lastDayCoverage -le 105) ("e a cobertura fica perto de 100% (veio {0}%)" -f $h.lastDayCoverage)
+    Assert-True (-not ($h.reason -match 'amostras esperadas')) 'sem declarar escassez numa ronda que não perdeu nada'
 
     # E o número da razão sai com PONTO, como o JSON — não com a vírgula do -f.
     $h = Get-WMCollectionHealth -PatrolDir (New-PatrolDir 'ponto' @((Amostra '2026-08-15T17:59:00Z'))) -NowUtc $AGORA

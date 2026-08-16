@@ -305,7 +305,26 @@ function Invoke-WMRules {
         #>
         $rid = [string]$rule.id
         if ([string]::IsNullOrWhiteSpace($rid)) {
-            $malformadas["(regra #$indice sem id)"] = 'regra sem id na tabela de limiares: impossível identificá-la, avaliá-la ou citá-la num laudo'
+            <#
+                O NOME SINTÉTICO NÃO PODE CONTER '#'.
+
+                A primeira versão usava "(regra #N sem id)", e o '#' é o
+                SEPARADOR DE CAMPO deste protocolo: a chave de lacuna é
+                'id#caminho.da.metrica', e as guardas do laudo separam por ele.
+                Consequência medida: Test-WMLaudoShape passava a exigir a lacuna
+                '(regra ' — com espaço no fim — enquanto o lado da declaração
+                aplica Trim(). Nenhuma grafia casava, e o laudo ficava
+                ESTRUTURALMENTE INAPROVÁVEL: as duas tentativas queimavam com
+                duas mensagens contraditórias sobre o mesmo item.
+
+                Eu tinha escrito que "o dia continua". Não continuava: a
+                correção trocou "motor morto, nenhum laudo" por "laudo
+                inaprovável, nenhum laudo".
+
+                O índice fica, porque duas regras sem id não podem colapsar numa
+                lacuna só — uma sumiria em silêncio.
+            #>
+            $malformadas["(regra sem id na posicao $indice)"] = 'regra sem id na tabela de limiares: impossível identificá-la, avaliá-la ou citá-la num laudo'
             continue
         }
 

@@ -820,9 +820,23 @@ function Test-WMLaudoFindings {
         if (-not $vistos.ContainsKey($id)) { $vistos[$id] = 0 }
         $vistos[$id]++
 
+<#
+            NÃO-BRANCO NÃO BASTA, e o projeto já sabia disso.
+
+            O prompt escrito neste mesmo commit promete que ponto, traço e 'n/a'
+            são recusados. A guarda usava só IsNullOrWhiteSpace e aceitava os
+            três — medido. É exatamente a lição que a camada aprendeu ao abolir
+            a prosa em notVerified ("conferir só que o campo não está em branco
+            era conferir quase nada"), reintroduzida no campo novo, agora com o
+            prompt afirmando a regra forte.
+
+            E vale a doutrina que este arquivo já registra: entre o prompt e a
+            guarda, quem vale é a guarda. Então a guarda passa a fazer o que o
+            prompt promete.
+        #>
         $faltantes = @()
-        if ([string]::IsNullOrWhiteSpace([string]$a.reading)) { $faltantes += 'reading' }
-        if ([string]::IsNullOrWhiteSpace([string]$a.action))  { $faltantes += 'action' }
+        if (-not (Test-WMTextoSubstantivo $a.reading)) { $faltantes += 'reading' }
+        if (-not (Test-WMTextoSubstantivo $a.action))  { $faltantes += 'action' }
         if ($faltantes.Count -gt 0) {
             [void]$incompletos.Add("$id (falta preencher: $($faltantes -join ', '))")
         }
@@ -888,6 +902,23 @@ function Test-WMLaudoFindings {
     como cobertura completa e a obrigação de declarar a lacuna simplesmente
     desaparecia. O tipo errado desligava a guarda em silêncio.
 #>
+<#
+    Texto que diz alguma coisa.
+
+    Recusa o vazio e também os preenchimentos de fachada — '.', '-', 'n/a',
+    '...', '?', 'null' — que satisfazem qualquer conferência de não-branco. O
+    piso de dois caracteres alfanuméricos é grosseiro de propósito: não julga
+    conteúdo, só exige que exista conteúdo.
+#>
+function Test-WMTextoSubstantivo {
+    param($Value)
+    $s = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($s)) { return $false }
+    $s = $s.Trim()
+    if ($s -match '^(?i:n/?a|nulo|null|nenhum|nada|sem|-+|\.+|\?+|_+)$') { return $false }
+    (@([regex]::Matches($s, '[\p{L}\d]')).Count -ge 2)
+}
+
 function Test-WMTrue {
     param($Value)
     if ($null -eq $Value) { return $false }
@@ -1093,6 +1124,6 @@ function Get-WMLaudoText {
 
 Export-ModuleMember -Function `
     New-WMLaudoPackage, Get-WMAllowedNumbers, Test-WMLaudoNumbers, Test-WMLaudoRuleIds,
-    Test-WMLaudoFindings, Test-WMLaudoShape, Test-WMTrue, Get-WMRealCount,
+    Test-WMLaudoFindings, Test-WMLaudoShape, Test-WMTrue, Get-WMRealCount, Test-WMTextoSubstantivo,
     Get-WMHardwarePhrases, Get-WMSpelledNumbers,
     Get-WMLaudoSystemPrompt, Get-WMLaudoSchema, Get-WMLaudoText

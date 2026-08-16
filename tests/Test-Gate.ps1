@@ -294,6 +294,20 @@ try {
     Assert-True (-not $r.aprovou) 'a suíte com saída acentuada e código 1 reprova'
     Assert-True ($r.text -match [regex]::Escape($acento)) 'e o texto acentuado chega ao portão INTEIRO, sem se perder na leitura'
 
+    <#
+        O stderr TAMBÉM, e ele não tinha teste: a âncora da bateria casava as
+        duas leituras de uma vez, então reverter só a de erro deixava a suíte
+        verde. Metade da trava vivia indefesa, escondida por uma âncora
+        casada-em-bloco.
+
+        E o stderr é justamente por onde sai o diagnóstico de uma suíte que
+        estourou — o texto que mais importa quando algo deu errado.
+    #>
+    $d = New-Cenario @(@{ file = 'Test-A.ps1'
+                          body = "[Console]::Error.WriteLine('$acento')`r`n'   ok    um'`r`n'  1 passou, 0 falhou'`r`nexit 1`r`n" })
+    $r = Invoke-Portao -Dir $d -Lista @(@{file='Test-A.ps1';min=1})
+    Assert-True ($r.text -match [regex]::Escape($acento)) 'o texto acentuado do STDERR também chega inteiro'
+
     # =====================================================================
     Start-TestGroup 'Portão: arquivo que sumiu'
 
