@@ -158,6 +158,50 @@ $mutantes = @(
        de='[void]$literais.Add($m.Value)'
        para='$null = $m'; suite='Test-Laudo.ps1' }
 
+    <#
+        AS TRAVAS DA PRÓPRIA AFERIÇÃO — impossíveis de mutar até o sandbox
+        passar a copiar 'tools'. A ferramenta que decide o portão era a única
+        peça do repositório que ninguém podia sabotar.
+    #>
+    @{ id='BL-91a'; nome='o portao reprova bateria com codigo != 0'; arq='tests\Run-All.ps1'
+       de='if ($codBat -ne 0) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
+
+    @{ id='BL-91b'; nome='bateria muda nao prova nada';            arq='tests\Run-All.ps1'
+       de="[void]`$falhas.Add('bateria de mutação: saiu com zero mas não declarou quantos mutantes morreram')"
+       para='$null = $codBat'; suite='Test-Gate.ps1' }
+
+    @{ id='BL-91c'; nome='bateria com ZERO mutantes nao prova nada'; arq='tests\Run-All.ps1'
+       de='if ($qtd -lt 1) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
+
+    @{ id='BL-91d'; nome='a contagem da bateria e conferida';       arq='tests\Run-All.ps1'
+       de='if ($mortos -ne $qtd) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
+
+    @{ id='BL-92';  nome='a bateria tem prazo';                     arq='tests\Run-All.ps1'
+       de='if (-not $pb.WaitForExit($BateriaTimeoutSec * 1000)) {'
+       para='if ($false) { $pb.WaitForExit()'; suite='Test-Gate.ps1' }
+
+    @{ id='BL-93';  nome='o sandbox da bateria copia tools';        arq='tools\Test-Mutantes.ps1'
+       de="foreach (`$d in 'src', 'config', 'tests', 'tools') {"
+       para="foreach (`$d in 'src', 'config', 'tests') {"; suite='Test-Gate.ps1' }
+
+    <#
+        As tres travas que b5543bf introduziu sem mutante - medidas vivas pela
+        nona verificacao.
+    #>
+    @{ id='BL-95a'; nome='piso de dois alfanumericos';            arq='src\WinMonitor.Laudo.psm1'
+       de='(@([regex]::Matches($s, ''[\p{L}\d]'')).Count -ge 2)'
+       para='(@([regex]::Matches($s, ''[\p{L}\d]'')).Count -ge 1)'; suite='Test-Laudo.ps1' }
+
+    @{ id='BL-95b'; nome='Trim antes da denylist de fachada';     arq='src\WinMonitor.Laudo.psm1'
+       de='$s = $s.Trim()'; para='$s = $s'; suite='Test-Laudo.ps1' }
+
+    @{ id='BL-95c'; nome='ramo do dia FECHADO na cobertura';      arq='src\WinMonitor.Report.psm1'
+       de='if ($ehHoje) {'; para='if ($true) {'; suite='Test-Report.ps1' }
+
+    @{ id='A5';    nome='regra malformada conta como lacuna';     arq='src\WinMonitor.Rules.psm1'
+       de='$lacunas = $semFonte.Count + $malformadas.Count + $semDado.Count'
+       para='$lacunas = $semFonte.Count + $semDado.Count'; suite='Test-Rules.ps1' }
+
     @{ id='BL-4b'; nome='recuo de exam.probes ausente';           arq='src\Invoke-Exam.ps1'
        de='$sondas = @($cfg.exam.probes | Where-Object { $_ -and $_.name -and $_.key })'
        para='$sondas = @($cfg.exam.probes)'; suite='Test-Exam.ps1' }
@@ -178,7 +222,18 @@ foreach ($m in $mutantes) {
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('wm-mut-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $tmp -Force | Out-Null
     try {
-        foreach ($d in 'src', 'config', 'tests') {
+        <#
+            'tools' ENTRA NA CÓPIA, e a omissão era estrutural.
+
+            Sem ela, nenhum mutante podia jamais apontar para esta ferramenta —
+            a peça que decide se o portão aprova era a única do repositório
+            impossível de sabotar. Medido: os dois consertos que ela recebeu (o
+            INCONCLUSIVO e a âncora obsoleta) sobreviviam à reversão, e não
+            havia como ser diferente.
+
+            A ferramenta anti-"defesa sem defensor" era a defesa sem defensor.
+        #>
+        foreach ($d in 'src', 'config', 'tests', 'tools') {
             Copy-Item -LiteralPath (Join-Path $raiz $d) -Destination $tmp -Recurse -Force
         }
 

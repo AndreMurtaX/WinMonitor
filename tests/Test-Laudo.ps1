@@ -515,6 +515,20 @@ O disco MP600 de 1863 GB tem folga, e o i9-11900K opera com 8 núcleos.
     Assert-True (Test-WMTextoSubstantivo 'ok') 'mas texto curto de verdade passa'
     Assert-True (-not (Test-WMTextoSubstantivo '   ')) 'e branco não'
 
+    <#
+        As duas metades da função, que entraram sem mutante e sem teste — a
+        verificação mediu as duas sobrevivendo à reversão:
+
+          - o PISO de dois alfanuméricos: sem ele, um caractere solto vira
+            conteúdo. 'x' não é leitura nem ação.
+          - o TRIM antes da denylist: sem ele, ' n/a ' com espaços é ACEITO —
+            a string que o prompt promete recusar, derrotada por um espaço.
+    #>
+    Assert-True (-not (Test-WMTextoSubstantivo 'x')) 'um caractere só não é conteúdo'
+    Assert-True (-not (Test-WMTextoSubstantivo '?')) 'nem um sinal de pergunta'
+    Assert-True (-not (Test-WMTextoSubstantivo ' n/a ')) 'nem n/a com espaços em volta'
+    Assert-True (-not (Test-WMTextoSubstantivo "`t-`t")) 'nem traço entre tabulações'
+
     # Preenchido, o mesmo laudo passa — a guarda não cobra nada além disso.
     $completo = New-Data '{"summary":"x","notVerified":[{"ruleId":"R-CPU-TEMP-SPEC","note":"n"}],"changedSinceLast":"","observations":[],"findings":[{"ruleId":"R-GPU-TEMP-DRIFT","reading":"a placa esta mais quente","action":"acompanhar na proxima ronda"},{"ruleId":"R-DISK-SPACE-LOW","reading":"pouco espaco","action":"liberar"}]}'
     Assert-True (Test-WMLaudoFindings -Laudo $completo -Package $pac).ok 'com os campos preenchidos, passa'

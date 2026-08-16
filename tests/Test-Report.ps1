@@ -196,14 +196,32 @@ try {
     New-Item -ItemType Directory -Path $dirHoje -Force | Out-Null
 
     # Uma amostra por minuto desde a meia-noite LOCAL até agora, sem buracos.
+    <#
+        O INSTANTE É FIXO, não o relógio de parede.
+
+        A primeira versão gerava as amostras de 'agora' e conferia contra
+        'agora'. Medido: entre 00:01 e 00:06 o teste REPROVAVA todo dia — com
+        poucos minutos decorridos, a amostra extra do minuto zero contra um
+        denominador fracionário dá 200%, 150%, 133%... e a asserção exige 90 a
+        115. Vermelho por motivo nenhum, seis minutos por dia, num projeto cujo
+        produto roda por tarefa agendada.
+
+        E é exatamente o defeito que o commit desta rodada listava como
+        CORRIGIDO: "teste dependendo do relógio de parede". A regra de
+        procedência de fixture continua valendo — o carimbo sai das funções de
+        produção — mas o INSTANTE de referência é escolhido, não sorteado.
+    #>
+    $agoraLocal = (Get-Date).Date.AddHours(9)
+    $hojeLocal  = $agoraLocal.ToString('yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+
     $decorridos = [int](($agoraLocal - $agoraLocal.Date).TotalMinutes)
-    $linhasHoje = @(0..$decorridos | ForEach-Object {
+    $linhasHoje = @(1..$decorridos | ForEach-Object {
         $t = $agoraLocal.Date.AddMinutes($_)
         '{"v":1,"host":"T","at":"' + $t.ToString('yyyy-MM-ddTHH:mm:ss.fffzzz', [System.Globalization.CultureInfo]::InvariantCulture) + '","cpu":{"util":3}}'
     })
     [System.IO.File]::WriteAllLines((Join-Path $dirHoje "$hojeLocal.jsonl"), $linhasHoje, (New-Object System.Text.UTF8Encoding($false)))
 
-    $h = Get-WMCollectionHealth -PatrolDir $dirHoje -NowUtc ([datetime]::UtcNow)
+    $h = Get-WMCollectionHealth -PatrolDir $dirHoje -NowUtc ($agoraLocal.ToUniversalTime())
     Assert-True $h.ok 'ronda completa desde a meia-noite local: coleta saudável'
     Assert-True (-not ($h.reason -match 'amostras esperadas')) 'e NÃO declara escassez, a qualquer hora do dia'
     Assert-True ($h.lastDayCoverage -ge 90 -and $h.lastDayCoverage -le 115) ("cobertura perto de 100%, não 14% nem 1500% (veio {0}%)" -f $h.lastDayCoverage)
@@ -236,6 +254,30 @@ try {
     Assert-Equal 1380 $h.expectedSoFar 'às 23:00 LOCAL, o esperado é 1380 — o decorrido do dia local'
     Assert-True ($h.lastDayCoverage -ge 95 -and $h.lastDayCoverage -le 105) ("e a cobertura fica perto de 100% (veio {0}%)" -f $h.lastDayCoverage)
     Assert-True (-not ($h.reason -match 'amostras esperadas')) 'sem declarar escassez numa ronda que não perdeu nada'
+
+    <#
+        O RAMO DO DIA FECHADO, que tinha comentário próprio e nenhum teste.
+
+        Quando o arquivo mais recente não é o de hoje, o denominador é o dia
+        INTEIRO — comparar um arquivo de ontem com o relógio de agora produz
+        percentual sem significado. Medido pela verificação: o mutante que
+        trocava 'if ($ehHoje)' por 'if ($true)' sobrevivia a todas as suítes.
+    #>
+    $ontemLocal = (Get-Date).Date.AddDays(-1)
+    $diaOntem   = $ontemLocal.ToString('yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+    $dirOntem   = Join-Path $tmp 'diaFechado'
+    New-Item -ItemType Directory -Path $dirOntem -Force | Out-Null
+
+    $linhasOntem = @(1..720 | ForEach-Object {
+        $t = $ontemLocal.AddMinutes($_)
+        '{"v":1,"host":"T","at":"' + $t.ToString('yyyy-MM-ddTHH:mm:ss.fffzzz', [System.Globalization.CultureInfo]::InvariantCulture) + '","cpu":{"util":3}}'
+    })
+    [System.IO.File]::WriteAllLines((Join-Path $dirOntem "$diaOntem.jsonl"), $linhasOntem, (New-Object System.Text.UTF8Encoding($false)))
+
+    # Referência às 09:00 de hoje: 540 min decorridos, mas o arquivo é de ontem.
+    $h = Get-WMCollectionHealth -PatrolDir $dirOntem -NowUtc ((Get-Date).Date.AddHours(9).ToUniversalTime())
+    Assert-Equal 1440 $h.expectedSoFar 'dia FECHADO usa o dia inteiro como denominador, não o relógio de hoje'
+    Assert-Equal 50 $h.lastDayCoverage 'e 720 de 1440 dá 50%, não um percentual sem significado'
 
     # E o número da razão sai com PONTO, como o JSON — não com a vírgula do -f.
     $h = Get-WMCollectionHealth -PatrolDir (New-PatrolDir 'ponto' @((Amostra '2026-08-15T17:59:00Z'))) -NowUtc $AGORA

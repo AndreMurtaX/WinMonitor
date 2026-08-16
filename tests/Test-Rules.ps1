@@ -526,6 +526,22 @@ try {
         Assert-True ((@($rv.configProblems) -join ' ') -match 'nenhuma regra foi avaliada') 'e diz em voz alta que nada foi medido'
     }
 
+    <#
+        REGRA MALFORMADA CONTA COMO LACUNA — e isso não tinha teste.
+
+        Medido pela verificação: remover $malformadas.Count da soma sobrevivia à
+        suíte inteira. Como 'complete = ($lacunas -eq 0)', uma tabela com uma
+        regra boa e uma malformada passaria a declarar COBERTURA COMPLETA com
+        coverage.malformed cheio — a lacuna calada, no arquivo cujo grupo
+        principal se chama "silêncio não é aprovação".
+    #>
+    $boaEmalformada = New-Rules ('{"version":1,"severityScale":["normal","observar","agir"],"rules":[' +
+        '{"id":"R-BOA","kind":"absolute","subsystem":"cpu","severity":"observar","claim":"a","metric":"cpu.util.p95","operator":"gt","value":90,' + $FO + '},' +
+        '{"id":"R-QUEBRADA","kind":"absolute","subsystem":"cpu","severity":"observar","claim":"b","metric":"cpu.util.p95","operator":"OPERADOR-INVALIDO","value":90,' + $FO + '}]}')
+    $rbm = Invoke-WMRules -Rollup $rollupSimples -Rules $boaEmalformada
+    Assert-Equal 1 (@(Get-WMNodeKeys $rbm.coverage.malformed).Count) 'a regra malformada é registrada'
+    Assert-True (-not $rbm.coverage.complete) 'e uma regra malformada IMPEDE a cobertura de se declarar completa'
+
     # E o caso normal continua podendo declarar cobertura completa.
     $ok1 = New-Rules ('{"version":1,"severityScale":["normal","observar","agir"],"rules":[{"id":"R-CPU-OK","kind":"absolute","subsystem":"cpu","severity":"observar","claim":"x","metric":"cpu.util.p95","operator":"gt","value":90,' + $FO + '}]}')
     $rok = Invoke-WMRules -Rollup $rollupSimples -Rules $ok1

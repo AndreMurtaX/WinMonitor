@@ -65,7 +65,7 @@ function Invoke-Portao {
     #>
     $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $txt = & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $portao `
-                -SuiteDir $Dir -SuiteSpec $spec -SuiteTimeoutSec $TimeoutSec `
+                -SuiteDir $Dir -SuiteSpec $spec -SuiteTimeoutSec $TimeoutSec -SemBateria `
                 -TotalTimeoutSec $TotalSec -Quiet 2>&1 | Out-String
     [pscustomobject]@{ text = $txt; aprovou = ($txt -match 'TODAS AS SUITES PASSARAM') }
 }
@@ -219,7 +219,7 @@ try {
         $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
         try {
             (& $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $portao `
-                 -SuiteDir $Dir -SuiteSpec $Spec -Quiet 2>&1 | Out-String)
+                 -SuiteDir $Dir -SuiteSpec $Spec -SemBateria -Quiet 2>&1 | Out-String)
         } catch { [string]$_ }
     }
 
@@ -307,6 +307,122 @@ try {
                           body = "[Console]::Error.WriteLine('$acento')`r`n'   ok    um'`r`n'  1 passou, 0 falhou'`r`nexit 1`r`n" })
     $r = Invoke-Portao -Dir $d -Lista @(@{file='Test-A.ps1';min=1})
     Assert-True ($r.text -match [regex]::Escape($acento)) 'o texto acentuado do STDERR também chega inteiro'
+
+    # =====================================================================
+    Start-TestGroup 'Portão: a bateria de mutação é julgada, não acreditada  [MUTAÇÃO]'
+
+    <#
+        ESTE GRUPO NÃO PODIA EXISTIR ATÉ AGORA, e é esse o ponto.
+
+        O bloco da bateria era guardado por '-not $SuiteDir', e toda invocação
+        daqui passa -SuiteDir: a peça acrescentada para acabar com "trava que
+        ninguém consegue exercitar" era exatamente isso. Quatro mutantes
+        sobreviviam ali.
+
+        E o portão aplicava à bateria UMA das suas seis conferências — o código
+        de saída. Medido: bateria reduzida a 'exit 0', bateria anunciando trava
+        indefesa e saindo com zero, e bateria declarando "TODOS OS 0 MUTANTES
+        MORRERAM" passavam todas. A bateria ESVAZIADA era aceita como prova de
+        que toda trava tem defensor.
+    #>
+    function Invoke-ComBateria {
+        param([string]$Corpo, [int]$PrazoBateria = 60)
+        $d = New-Cenario @((Suite-Ok 'Test-A.ps1' 3))
+        $fake = Join-Path $d '_bateria.ps1'
+        [System.IO.File]::WriteAllText($fake, $Corpo, $enc)
+        $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $txt = & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $portao `
+                   -SuiteDir $d -SuiteSpec 'Test-A.ps1:3' -BateriaPath $fake `
+                   -BateriaTimeoutSec $PrazoBateria -Quiet 2>&1 | Out-String
+        [pscustomobject]@{ text = $txt; aprovou = ($txt -match 'TODAS AS SUITES PASSARAM') }
+    }
+
+    $r = Invoke-ComBateria "'  morto  X'`r`n'TODOS OS 1 MUTANTES MORRERAM'`r`nexit 0`r`n"
+    Assert-True $r.aprovou 'bateria honesta com 1 mutante morto: o portão aprova'
+
+    $r = Invoke-ComBateria "'  VIVO   X'`r`n'1 trava(s) indefesa(s)'`r`nexit 1`r`n"
+    Assert-True (-not $r.aprovou) 'bateria que acusa trava indefesa reprova o portão'
+
+    <#
+        Os três casos que passavam. Cada um é a bateria não tendo provado nada.
+    #>
+    $r = Invoke-ComBateria "exit 0`r`n"
+    Assert-True (-not $r.aprovou) 'bateria MUDA que sai com zero não prova nada'
+    Assert-True ($r.text -match 'não declarou quantos') 'e o motivo diz que ela não declarou'
+
+    $r = Invoke-ComBateria "'TODOS OS 0 MUTANTES MORRERAM'`r`nexit 0`r`n"
+    Assert-True (-not $r.aprovou) 'bateria com ZERO mutantes é vacuamente verdadeira, não é prova'
+    Assert-True ($r.text -match 'ZERO mutantes') 'e o motivo nomeia isso'
+
+    $r = Invoke-ComBateria "'  morto  X'`r`n'TODOS OS 9 MUTANTES MORRERAM'`r`nexit 0`r`n"
+    Assert-True (-not $r.aprovou) 'bateria que infla a contagem reprova, como qualquer suíte'
+    Assert-True ($r.text -match 'não bate com o que rodou') 'e pelo mesmo motivo'
+
+    # A bateria também tem prazo — antes rodava fora de todo teto do portão.
+    $r = Invoke-ComBateria "Start-Sleep -Seconds 30`r`n'TODOS OS 1 MUTANTES MORRERAM'`r`nexit 0`r`n" -PrazoBateria 2
+    Assert-True (-not $r.aprovou) 'bateria que trava reprova por prazo'
+    Assert-True ($r.text -match 'prazo') 'e o motivo nomeia o prazo'
+
+    # Bateria ausente é vermelho: sem ela, nada prova que as travas têm defensor.
+    $d = New-Cenario @((Suite-Ok 'Test-A.ps1' 3))
+    $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $t = & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $portao `
+             -SuiteDir $d -SuiteSpec 'Test-A.ps1:3' -BateriaPath (Join-Path $d 'nao-existe.ps1') -Quiet 2>&1 | Out-String
+    Assert-True (-not ($t -match 'TODAS AS SUITES PASSARAM')) 'bateria ausente reprova'
+
+    # E pular tem de ser DITO, não silencioso.
+    $t = & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $portao `
+             -SuiteDir $d -SuiteSpec 'Test-A.ps1:3' -SemBateria -Quiet 2>&1 | Out-String
+    Assert-True ($t -match 'PULADA') 'pular a bateria é anunciado em voz alta'
+
+    # =====================================================================
+    Start-TestGroup 'A bateria julga a si mesma  [MUTAÇÃO]'
+
+    <#
+        A ferramenta que decide se o portão aprova era a ÚNICA peça do
+        repositório impossível de sabotar: o sandbox dela copiava src, config e
+        tests, nunca tools. Nenhum mutante podia apontar para ela, e os dois
+        consertos que ela recebeu — o INCONCLUSIVO e a âncora obsoleta —
+        sobreviviam à reversão por construção.
+
+        Agora tools entra na cópia, e estes testes exercitam a lógica dela
+        DIRETAMENTE, com uma bateria de um mutante só.
+    #>
+    $bateria = Join-Path (Split-Path -Parent $PSScriptRoot) 'tools\Test-Mutantes.ps1'
+    $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+
+    Assert-True (Test-Path $bateria) 'a bateria existe'
+
+    <#
+        try/catch: a bateria usa Write-Error, e stderr de comando nativo sob
+        $ErrorActionPreference='Stop' derruba ESTA suíte — que morre sem resumo,
+        e a própria bateria classifica como INCONCLUSIVO. A trava nova acusando
+        o teste da trava nova.
+    #>
+    $saidaAnc = ''
+    try {
+        $saidaAnc = & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $bateria -Somente 'NAO-EXISTE-ESTE-ID' 2>&1 | Out-String
+    } catch { $saidaAnc = [string]$_ }
+    Assert-True ($saidaAnc -match 'nenhum mutante casa') 'filtro que não casa nenhum mutante é erro, não silêncio'
+
+    <#
+        E o sandbox precisa mesmo copiar tools: sem isso, um mutante apontado
+        para a própria ferramenta não teria o que mutar. Confere-se lendo o
+        código dela, porque o efeito só aparece num mutante que ainda não
+        existe — e "ainda não existe" é exatamente como esta lacuna sobreviveu.
+    #>
+    <#
+        A asserção olha a LINHA do laço, não o arquivo inteiro: a bateria contém
+        a própria string que ela muta, guardada no campo 'de' do mutante, e uma
+        busca no texto todo casava com essa definição — o mutante sobrevivia
+        porque o teste encontrava a evidência no lugar errado.
+    #>
+    $linhaCopia = @(Get-Content -LiteralPath $bateria -Encoding UTF8 |
+                        Where-Object { $_ -match '^\s*foreach \(\$d in ' })
+    Assert-Equal 1 $linhaCopia.Count 'há exatamente um laço de cópia no sandbox da bateria'
+    Assert-True ($linhaCopia[0] -match "'tools'") 'e ele copia tools: a bateria pode ser mutada como qualquer outra peça'
+
+    Assert-True (([System.IO.File]::ReadAllText($bateria)) -match 'INCONCLUSIVO') 'e silêncio continua sendo inconclusivo, não morte'
 
     # =====================================================================
     Start-TestGroup 'Portão: arquivo que sumiu'

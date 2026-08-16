@@ -33,8 +33,14 @@
          imprime o resumo sem rodar teste nenhum é pega aqui.
       5. VARREDURA DE DIRETÓRIO. Arquivo Test-*.ps1 que não está na lista é
          vermelho — senão apagar uma linha da lista some com uma suíte inteira.
-      6. PRAZO, por suíte e no conjunto. Suíte que trava não pode segurar o
-         portão para sempre, e a soma dos prazos não pode virar horas.
+      6. PRAZO, por suíte, no conjunto E na bateria. Suíte que trava não pode
+         segurar o portão para sempre. A bateria rodava fora de todo teto: com
+         teto global de 1 s ela seguia por 93 s, medido.
+      7. A BATERIA DE MUTAÇÃO É JULGADA PELAS MESMAS DOUTRINAS. O portão lhe
+         aplicava UMA das conferências — o código de saída — e nenhuma das
+         outras. Bateria muda, bateria com zero mutantes e bateria que anuncia
+         trava indefesa saindo com zero passavam todas: a bateria ESVAZIADA era
+         aceita como prova de que toda trava tem defensor.
 
     O piso é atualizado À MÃO quando testes são acrescentados. Isso é de
     propósito: se ele se ajustasse sozinho, não seria piso.
@@ -68,20 +74,36 @@ param(
     #>
     [int]$TotalTimeoutSec = 1800,
     <#
-        -Rapido pula a bateria de mutacao, que recopia o projeto por mutante e
-        leva minutos. Quem pula precisa dizer que pulou, e o portao diz.
+        -Rapido pula a bateria de mutação, que recopia o projeto por mutante.
+        Quem pula precisa dizer que pulou, e o portão diz.
     #>
-    [switch]$Rapido
+    [switch]$Rapido,
+    <#
+        A BATERIA PRECISA SER ALCANÇÁVEL PELA AFERIÇÃO, e não era.
+
+        O bloco dela estava guardado por '-not $SuiteDir', e Test-Gate SEMPRE
+        passa -SuiteDir. Quatro mutantes sobreviviam ali — inclusive o que
+        desliga a conferência inteira. Era o defeito que o cabeçalho deste
+        arquivo condena ("trava que a costura de verificação não consegue
+        exercitar é trava que ninguém sabe se funciona"), cometido na peça
+        acrescentada para acabar com ele.
+
+        -BateriaPath aponta para uma bateria sintética; -SemBateria pula por
+        escolha explícita. Nenhum dos dois é usado em produção.
+    #>
+    [string]$BateriaPath,
+    [switch]$SemBateria,
+    [int]$BateriaTimeoutSec = 900
 )
 
 $suites = @(
     @{ file = 'Test-Rollup.ps1';      min = 147 }
-    @{ file = 'Test-Rules.ps1';       min = 148 }
-    @{ file = 'Test-Laudo.ps1';       min = 166 }
+    @{ file = 'Test-Rules.ps1';       min = 150 }
+    @{ file = 'Test-Laudo.ps1';       min = 170 }
     @{ file = 'Test-LaudoDriver.ps1'; min = 37  }
-    @{ file = 'Test-Report.ps1';      min = 91  }
+    @{ file = 'Test-Report.ps1';      min = 93  }
     @{ file = 'Test-Exam.ps1';        min = 52  }
-    @{ file = 'Test-Gate.ps1';        min = 39  }
+    @{ file = 'Test-Gate.ps1';        min = 56  }
     @{ file = 'Test-Drivers.ps1';     min = 56  }
 )
 
@@ -318,21 +340,78 @@ foreach ($s in $suites) { $totalEsperado += [int]$s.min }
     quando alguem lembra" era, ela propria, uma defesa que so existia quando
     alguem lembrava. Medido pela verificacao, nao temido.
 #>
-if (-not $Rapido -and -not $SuiteDir) {
+if ($Rapido -or $SemBateria) {
     ""
-    "##################  bateria de mutacao  ##################"
-    $bat = Join-Path (Split-Path -Parent $PSScriptRoot) 'tools\Test-Mutantes.ps1'
+    "(bateria de mutação PULADA: o verde abaixo não diz nada sobre travas indefesas)"
+} else {
+    ""
+    "##################  bateria de mutação  ##################"
+    $bat = if ($BateriaPath) { $BateriaPath }
+           else { Join-Path (Split-Path -Parent $PSScriptRoot) 'tools\Test-Mutantes.ps1' }
+
     if (-not (Test-Path -LiteralPath $bat)) {
-        [void]$falhas.Add('tools\Test-Mutantes.ps1 nao existe: nada prova que as travas sao defendidas')
+        [void]$falhas.Add('a bateria de mutação não existe: nada prova que as travas são defendidas')
     } else {
-        $saidaBat = & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $bat 2>&1 | Out-String
-        $codBat = $LASTEXITCODE
-        if ($Quiet) { ($saidaBat -split "`n" | Where-Object { $_ -match 'MUTANTES|indefesa|VIVO|INCONCLUSIVO' }) -join "`n" } else { $saidaBat }
-        if ($codBat -ne 0) { [void]$falhas.Add("bateria de mutacao: ha trava indefesa ou inconclusiva (codigo $codBat)") }
+        <#
+            A BATERIA É JULGADA PELAS MESMAS DOUTRINAS QUE AS SUÍTES.
+
+            O portão aplicava a ela UMA das suas seis conferências — o código de
+            saída — e nenhuma das outras cinco. Medido: bateria reduzida a
+            'exit 0', bateria que anuncia trava indefesa e sai com zero, e
+            bateria que declara "TODOS OS 0 MUTANTES MORRERAM" passavam todas.
+            A bateria ESVAZIADA era aceita como prova de que toda trava tem quem
+            a defenda — "etapa que não roda contando como verde", um nível acima,
+            no commit cuja manchete era exatamente isso.
+
+            E ela rodava fora de qualquer prazo: com teto global de 1 s, o laço
+            parava e a bateria seguia por 93 s.
+        #>
+        $batOut = [System.IO.Path]::GetTempFileName()
+        $pb = Start-Process -FilePath $psExe -PassThru -NoNewWindow -Wait:$false `
+                  -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $bat `
+                  -RedirectStandardOutput $batOut -RedirectStandardError ($batOut + '.err')
+        $null = $pb.Handle
+
+        if (-not $pb.WaitForExit($BateriaTimeoutSec * 1000)) {
+            try { $pb.Kill() } catch { }
+            [void]$falhas.Add("bateria de mutação: estourou o prazo de $BateriaTimeoutSec s e foi morta")
+            $saidaBat = ''
+            $codBat = -1
+        } else {
+            $codBat = $pb.ExitCode
+            $saidaBat = (Get-Content -LiteralPath $batOut -Raw -Encoding OEM -ErrorAction SilentlyContinue) + "`n" +
+                        (Get-Content -LiteralPath ($batOut + '.err') -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+        }
+        Remove-Item -LiteralPath $batOut, ($batOut + '.err') -Force -ErrorAction SilentlyContinue
+
+        if ($Quiet) { ($saidaBat -split "`n" | Where-Object { $_ -match 'MUTANTES|indefesa|VIVO|INCONCLUSIVO|prazo' }) -join "`n" }
+        else { $saidaBat }
+
+        if ($codBat -ne 0) {
+            [void]$falhas.Add("bateria de mutação: há trava indefesa ou inconclusiva (código $codBat)")
+        }
+
+        <#
+            RESUMO OBRIGATÓRIO, e CONFERIDO — as duas doutrinas que faltavam.
+            Bateria que não declara quantos mutantes rodou não provou nada, e
+            zero mutante é o caso em que "todos morreram" é vacuamente verdade.
+        #>
+        $mb = [regex]::Match($saidaBat, 'TODOS OS (\d+) MUTANTES MORRERAM')
+        if (-not $mb.Success) {
+            if ($codBat -eq 0) {
+                [void]$falhas.Add('bateria de mutação: saiu com zero mas não declarou quantos mutantes morreram')
+            }
+        } else {
+            $qtd = [int]$mb.Groups[1].Value
+            $mortos = @([regex]::Matches($saidaBat, '(?m)^\s+morto\s')).Count
+            if ($qtd -lt 1) {
+                [void]$falhas.Add('bateria de mutação: declarou ZERO mutantes — bateria vazia não prova defesa nenhuma')
+            }
+            if ($mortos -ne $qtd) {
+                [void]$falhas.Add("bateria de mutação: diz $qtd mortos e imprimiu $mortos linha(s) de mutante — o resumo não bate com o que rodou")
+            }
+        }
     }
-} elseif ($Rapido) {
-    ""
-    "(bateria de mutacao PULADA por -Rapido: o verde abaixo nao diz nada sobre travas indefesas)"
 }
 
 ""
