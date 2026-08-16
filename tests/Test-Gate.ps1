@@ -1050,6 +1050,34 @@ try {
     #>
     Assert-True ($tLng -match 'aceito junto de -SuiteDir') 'a mensagem de uso chega INTEIRA de um caminho longo'
     Assert-True ($tLng -match 'ERRO: ') 'e ela sai crua no stderr, sem passar pelo formatador'
+
+    <#
+        E A BATERIA, NO MESMO CAMINHO ARMADO — o segundo lugar, que eu consertei
+        sem defensor próprio.
+
+        Medido pela décima terceira verificação: sabotar o conserto de
+        tools\Test-Mutantes.ps1, voltando para Write-Error, ficava VERDE numa
+        raiz de 24 caracteres e só reprovava com 166. A trava contra dependência
+        de caminho era ela própria dependente do caminho — e a raiz do autor tem
+        35, dentro da faixa em que a sabotagem passa despercebida.
+
+        Por isso esta asserção roda a partir do caminho ARMADO, e não do
+        repositório: um defensor que só funciona onde o defeito não aparece não
+        é defensor.
+    #>
+    $oBat = [System.IO.Path]::GetTempFileName()
+    $pBat = Start-Process -FilePath $psExe -PassThru -NoNewWindow -Wait:$false `
+                -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', `
+                              (Join-Path $dirLongo 'tools\Test-Mutantes.ps1'), '-Somente', 'NAO-EXISTE-ESTE-ID' `
+                -RedirectStandardOutput $oBat -RedirectStandardError ($oBat + '.err')
+    $null = $pBat.Handle
+    if (-not $pBat.WaitForExit(120000)) { try { $pBat.Kill() } catch { } }
+    $tBat = [string](Get-Content -LiteralPath $oBat -Raw -Encoding OEM -ErrorAction SilentlyContinue) + "`n" +
+            [string](Get-Content -LiteralPath ($oBat + '.err') -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+    Remove-Item -LiteralPath $oBat, ($oBat + '.err') -Force -ErrorAction SilentlyContinue
+
+    Assert-True ($tBat -match 'nenhum mutante casa') 'a mensagem da BATERIA também chega inteira de um caminho longo'
+    Assert-True ($tBat -match 'ERRO: ') 'e ela também sai crua, pelo mesmo motivo'
     Assert-True (-not ($tLng -match 'TODAS AS SUITES PASSARAM')) 'e o portão continua reprovando pelo motivo certo'
 
     # =====================================================================

@@ -550,6 +550,16 @@ $mutantes = @(
     @{ id='BL-100'; nome='erro de uso sai cru, sem formatador';   arq='tests\Run-All.ps1'
        de='[Console]::Error.WriteLine("ERRO: $Mensagem")'; para='Write-Error $Mensagem'; suite='Test-Gate.ps1' }
 
+    <#
+        O SEGUNDO LUGAR do erro de uso cru. BL-100 ancora em tests\Run-All.ps1;
+        este ancora na bateria. Medido pela 13a verificacao: sabotar so este
+        ficava VERDE numa raiz de 24 caracteres e so reprovava com 166 - e a
+        raiz do autor tem 35. O defensor so funcionava onde o defeito nao
+        aparece.
+    #>
+    @{ id='BL-102'; nome='erro da bateria sai cru tambem';        arq='tools\Test-Mutantes.ps1'
+       de='[Console]::Error.WriteLine("ERRO: nenhum mutante casa ''$Somente''")'
+       para='Write-Error "nenhum mutante casa ''$Somente''"'; suite='Test-Gate.ps1' }
     @{ id='BL-98';  nome='-BateriaPath confinado a afericao';     arq='tests\Run-All.ps1'
        de='if ($BateriaPath -and -not $SuiteDir) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
 
