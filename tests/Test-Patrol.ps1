@@ -222,6 +222,97 @@ try {
     Assert-Equal $linhas[0] $linhas2[0] 'e a amostra anterior fica intacta'
 
     # =====================================================================
+    Start-TestGroup 'A ronda: sonda MORTA não pode virar sonda viva  [MUTAÇÃO]'
+
+    <#
+        AS TRÊS INVARIANTES QUE NENHUMA DAS NOVE SUÍTES DEFENDIA.
+
+        A décima terceira verificação mediu, mutando a ronda e rodando o portão
+        inteiro: zerar `cov.gap`, pôr sonda que FALHOU dentro de `cov.ok`, e
+        trocar `exit 2` por `exit 0` — as três passavam verdes. De doze mutações
+        na ronda, três morriam.
+
+        E o bloco de cobertura é o que o próprio arquivo chama de razão de ser:
+        "impede 'nenhum problema encontrado' de se confundir com 'não consegui
+        olhar'". A frase estava lá, sem ninguém a segurando.
+
+        O cenário planta uma sonda sintética que SEMPRE falha, com key própria, e
+        exige que ela apareça como lacuna e NÃO como sucesso.
+    #>
+    $projFalha = New-ProjetoLimpo 'sonda-morta'
+    [System.IO.File]::WriteAllText((Join-Path $projFalha 'src\probes\Probe-Morta.ps1'),
+        "param(`$Facts, [int]`$TimeoutSec)`r`n@{ ok = `$false; reason = 'sonda sintetica que sempre falha' }`r`n",
+        (New-Object System.Text.UTF8Encoding($true)))
+
+    $cfgFalha = Join-Path $projFalha 'config\config.json'
+    $jFalha = Get-Content -LiteralPath $cfgFalha -Raw -Encoding UTF8 | ConvertFrom-Json
+    $jFalha.patrol.probes = @($jFalha.patrol.probes) + @([pscustomobject]@{ name = 'Morta'; key = 'mor' })
+    [System.IO.File]::WriteAllText($cfgFalha, ($jFalha | ConvertTo-Json -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
+
+    <#
+        PROCESSO PRÓPRIO, e não invocação daqui: o módulo já está carregado
+        apontando para OUTRA cópia, e Get-WMPath resolveria os caminhos para
+        ela — a amostra iria parar no projeto errado e este teste mediria o
+        diretório errado. Medido: foi exatamente o que aconteceu na primeira
+        versão deste cenário.
+    #>
+    $oF = Join-Path $tmp 'sonda-morta.txt'
+    $pF = Start-Process -FilePath $psExe -PassThru -NoNewWindow -Wait:$false `
+              -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', `
+                            (Join-Path $projFalha 'src\Invoke-Patrol.ps1') `
+              -RedirectStandardOutput $oF -RedirectStandardError ($oF + '.err')
+    $null = $pF.Handle
+    $null = $pF.WaitForExit(120000)
+
+    $arqF = @(Get-ChildItem -LiteralPath (Join-Path $projFalha 'data\patrol') -Filter '*.jsonl')
+    Assert-Equal 1 $arqF.Count 'a ronda com sonda morta ainda grava o dia'
+    <#
+        Leitura CRUA e não por linha. A invariante "uma linha por execução" é
+        medida no grupo anterior, contra a ronda normal; aqui o que importa é o
+        conteúdo da cobertura, e ler o arquivo inteiro torna este cenário imune
+        à forma como a amostra foi quebrada.
+    #>
+    $amF = (Get-Content -LiteralPath $arqF[0].FullName -Raw) | ConvertFrom-Json
+
+    $okF  = @($amF.cov.ok)
+    $gapF = @($amF.cov.gap.PSObject.Properties.Name)
+
+    Assert-True ($gapF -contains 'mor') 'sonda que falhou aparece como LACUNA declarada'
+    Assert-True (-not ($okF -contains 'mor')) 'e NÃO aparece entre as bem-sucedidas'
+    Assert-True ([string]$amF.cov.gap.mor -match 'sempre falha') 'com o motivo dela, não com silêncio'
+    Assert-True ($okF.Count -ge 1) 'e as sondas que funcionaram continuam declaradas como tal'
+    Assert-True (-not ($amF.PSObject.Properties.Name -contains 'mor')) 'a chave da sonda morta não vira bloco de dados vazio'
+
+    <#
+        O CÓDIGO DE SAÍDA É O CONTRATO COM O AGENDADOR. É por ele que o Windows
+        registra "última execução: 0x2" e é a única coisa que alguém olha ao
+        perguntar se a ronda está viva. 'exit 2' significa que o módulo não
+        carregou — a ronda não rodou de forma nenhuma —, e trocá-lo por zero faz
+        a tarefa agendada relatar sucesso para todo dia em que nada foi coletado.
+    #>
+    $projSemModulo = New-ProjetoLimpo 'sem-modulo'
+    Remove-Item -LiteralPath (Join-Path $projSemModulo 'src\WinMonitor.psm1') -Force
+
+    $oSm = Join-Path $tmp 'sem-modulo.txt'
+    $pSm = Start-Process -FilePath $psExe -PassThru -NoNewWindow -Wait:$false `
+               -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', `
+                             (Join-Path $projSemModulo 'src\Invoke-Patrol.ps1') `
+               -RedirectStandardOutput $oSm -RedirectStandardError ($oSm + '.err')
+    $null = $pSm.Handle
+    $null = $pSm.WaitForExit(120000)
+    Assert-Equal 2 $pSm.ExitCode 'sem o módulo, a ronda sai com 2 — nem 0 nem 1'
+
+    # E a execução normal sai com ZERO, senão o 2 acima seria vacuamente verdadeiro.
+    $oOk = Join-Path $tmp 'ronda-ok.txt'
+    $pOk = Start-Process -FilePath $psExe -PassThru -NoNewWindow -Wait:$false `
+               -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', `
+                             (Join-Path $projBase 'src\Invoke-Patrol.ps1'), '-NoWrite' `
+               -RedirectStandardOutput $oOk -RedirectStandardError ($oOk + '.err')
+    $null = $pOk.Handle
+    $null = $pOk.WaitForExit(120000)
+    Assert-Equal 0 $pOk.ExitCode 'e a ronda que roda inteira sai com zero'
+
+    # =====================================================================
     Start-TestGroup 'A ferramenta que protege o acento NÃO pode destruí-lo  [MUTAÇÃO]'
 
     <#

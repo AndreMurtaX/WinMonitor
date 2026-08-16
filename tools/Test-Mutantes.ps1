@@ -360,6 +360,25 @@ $mutantes = @(
     @{ id='BL-P3'; nome='o plano nao promete o que nao destrava'; arq='tools\Register-PatrolTask.ps1'
        de='ATENCAO: a ronda NAO le SMART fino'
        para='a ronda passa a poder ler SMART detalhado'; suite='Test-Drivers.ps1' }
+    <#
+        AS TRES INVARIANTES DA RONDA que nenhuma das nove suites defendia.
+        Medidas vivas pela 13a verificacao: zerar cov.gap, por sonda que FALHOU
+        dentro de cov.ok, e trocar exit 2 por exit 0 passavam as tres.
+
+        O bloco de cobertura e o que o proprio Invoke-Patrol chama de razao de
+        ser: "impede 'nenhum problema encontrado' de se confundir com 'nao
+        consegui olhar'". A frase estava la, sem ninguem a segurando.
+    #>
+    @{ id='BL-W6'; nome='sonda que falha vira lacuna declarada'; arq='src\Invoke-Patrol.ps1'
+       de='$gap[$probe.key] = $r.reason'; para='$null = $r'; suite='Test-Patrol.ps1' }
+
+    @{ id='BL-W7'; nome='sonda que falha NAO entra em cov.ok';   arq='src\Invoke-Patrol.ps1'
+       de="            default {`r`n                `$gap[`$probe.key] = `$r.reason"
+       para="            default {`r`n                `$ok += `$probe.key`r`n                `$gap[`$probe.key] = `$r.reason"
+       suite='Test-Patrol.ps1' }
+
+    @{ id='BL-W8'; nome='sem modulo a ronda sai com 2';          arq='src\Invoke-Patrol.ps1'
+       de='exit 2'; para='exit 0'; suite='Test-Patrol.ps1' }
     @{ id='A5';    nome='regra malformada conta como lacuna';     arq='src\WinMonitor.Rules.psm1'
        de='$lacunas = $semFonte.Count + $malformadas.Count + $semDado.Count'
        para='$lacunas = $semFonte.Count + $semDado.Count'; suite='Test-Rules.ps1' }
