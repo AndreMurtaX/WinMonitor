@@ -111,7 +111,7 @@ param(
     #>
     [switch]$SemSombra,
     [int]$BateriaTimeoutSec = 2700,
-    [int]$MutantesMin = 50
+    [int]$MutantesMin = 51
 )
 
 $suites = @(
@@ -121,7 +121,7 @@ $suites = @(
     @{ file = 'Test-LaudoDriver.ps1'; min = 37  }
     @{ file = 'Test-Report.ps1';      min = 93  }
     @{ file = 'Test-Exam.ps1';        min = 81  }
-    @{ file = 'Test-Gate.ps1';        min = 84  }
+    @{ file = 'Test-Gate.ps1';        min = 88  }
     @{ file = 'Test-Drivers.ps1';     min = 56  }
 )
 
@@ -365,6 +365,40 @@ foreach ($s in $suites) {
 $totalEsperado = 0
 foreach ($s in $suites) { $totalEsperado += [int]$s.min }
 
+$projRaiz = Split-Path -Parent $PSScriptRoot
+
+<#
+    OS BYTES QUE EU EXECUTO TÊM DE SER OS BYTES QUE EU PUBLICO.
+
+    O .gitattributes deste projeto declara '*.ps1 text eol=crlf' e a árvore de
+    trabalho estava em LF. Quem clonasse receberia arquivos com quebra de linha
+    diferente de tudo que rodou aqui: o verde valia para uma versão que só
+    existia nesta máquina. Medido, não temido — 46 arquivos, todos divergentes.
+
+    E o hábito que produz isso é MEU. Toda edição em lote que eu escrevo com
+    [System.IO.File]::WriteAllText junta as linhas com "`n" e reintroduz a
+    divergência em silêncio, num arquivo por vez. Lembrete não segura isso;
+    por isso é conferência, dentro do portão, sobre os bytes.
+
+    O QUE ELA NÃO PEGA, dito em vez de negado: divergência de CODIFICAÇÃO. BOM
+    ausente num .ps1 corrompe acento sem mudar quebra de linha nenhuma — quem
+    cuida disso é tools\Repair-Encoding.ps1, e ele não roda daqui.
+#>
+$lfSoltos = New-Object System.Collections.ArrayList
+foreach ($arq in @(Get-ChildItem -LiteralPath $projRaiz -Recurse -File -Include '*.ps1', '*.psm1', '*.psd1' -ErrorAction SilentlyContinue |
+                       Where-Object { $_.FullName -notmatch '\\(data|logs|\.git)\\' })) {
+    $bytes = [System.IO.File]::ReadAllBytes($arq.FullName)
+    for ($i = 0; $i -lt $bytes.Length; $i++) {
+        if ($bytes[$i] -eq 10 -and ($i -eq 0 -or $bytes[$i - 1] -ne 13)) {
+            [void]$lfSoltos.Add($arq.FullName.Substring($projRaiz.Length).TrimStart('\'))
+            break
+        }
+    }
+}
+if ($lfSoltos.Count -gt 0) {
+    [void]$falhas.Add("quebra de linha: $($lfSoltos.Count) script(s) com LF solto e o .gitattributes declara CRLF — o que roda aqui não é o que o clone recebe: $($lfSoltos -join ', ')")
+}
+
 <#
     VARREDURA DE SOMBRA DE PARÂMETRO — a única armadilha que mordeu TRÊS vezes.
 
@@ -379,7 +413,7 @@ foreach ($s in $suites) { $totalEsperado += [int]$s.min }
 
     Por isso ela entra no portão em vez de ficar em tools\ esperando convite.
 #>
-$sombra = Join-Path (Split-Path -Parent $PSScriptRoot) 'tools\Find-ParamShadow.ps1'
+$sombra = Join-Path $projRaiz 'tools\Find-ParamShadow.ps1'
 if ($SemSombra) {
     ""
     "(varredura de sombra de parâmetro PULADA: o verde abaixo não diz nada sobre parâmetro apagado)"

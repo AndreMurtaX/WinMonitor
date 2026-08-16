@@ -293,6 +293,15 @@ $mutantes = @(
     @{ id='BL-97c'; nome='o portao reprova por sombra';           arq='tests\Run-All.ps1'
        de='if ($psom.ExitCode -ne 0) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
 
+    <#
+        Os bytes executados sao os publicados. O .gitattributes declara CRLF e a
+        arvore estava em LF: o verde valia para uma versao que so existia nesta
+        maquina. O mutante desliga a conferencia; o cenario copia o projeto,
+        reescreve um arquivo em LF e exige vermelho.
+    #>
+    @{ id='BL-99';  nome='LF solto num script reprova';           arq='tests\Run-All.ps1'
+       de='if ($lfSoltos.Count -gt 0) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
+
     @{ id='BL-98';  nome='-BateriaPath confinado a afericao';     arq='tests\Run-All.ps1'
        de='if ($BateriaPath -and -not $SuiteDir) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
 

@@ -693,6 +693,60 @@ try {
     Assert-True (-not ($tSom -match 'TODAS AS SUITES PASSARAM')) 'projeto com sombra de parâmetro NÃO passa no portão'
     Assert-True ($tSom -match 'sombra de par') 'e o motivo nomeia a sombra de parâmetro'
 
+    # =====================================================================
+    Start-TestGroup 'Quebra de linha: os bytes executados são os publicados  [MUTAÇÃO]'
+
+    <#
+        O .gitattributes declara '*.ps1 text eol=crlf' e a árvore de trabalho
+        estava em LF — os 46 arquivos. Quem clonasse recebia bytes que nunca
+        tinham rodado aqui, e todo verde deste projeto valia para uma versão que
+        só existia nesta máquina.
+
+        O hábito que produz isso não é de terceiros: é meu. Edição em lote com
+        WriteAllText junta linhas com "`n" e reintroduz a divergência em
+        silêncio, um arquivo por vez.
+
+        O cenário copia o projeto (cópia byte a byte preserva CRLF), reescreve
+        UM arquivo em LF e exige que o portão daquela cópia fique vermelho.
+    #>
+    $dQbr = New-Cenario @((Suite-Ok 'Test-A.ps1' 1))
+    $projQbr = Join-Path $dQbr 'proj'
+    New-Item -ItemType Directory -Path $projQbr -Force | Out-Null
+    foreach ($sub in 'src', 'config', 'tests', 'tools') {
+        Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) $sub) -Destination $projQbr -Recurse -Force
+    }
+    $alvoQbr = Join-Path $projQbr 'src\WinMonitor.psm1'
+    $bytesQbr = [System.IO.File]::ReadAllBytes($alvoQbr)
+    $textoQbr = [System.Text.Encoding]::UTF8.GetString($bytesQbr).Replace("`r`n", "`n")
+    [System.IO.File]::WriteAllText($alvoQbr, $textoQbr, $enc)
+
+    <#
+        A sabotagem tem de ser REAL: se a cópia já viesse em LF, o cenário
+        estaria medindo o estado do repositório e não a trava. Conferido nos
+        bytes, aqui, antes de rodar o portão.
+    #>
+    $bQbr = [System.IO.File]::ReadAllBytes($alvoQbr)
+    $lfSolto = 0
+    for ($i = 0; $i -lt $bQbr.Length; $i++) {
+        if ($bQbr[$i] -eq 10 -and ($i -eq 0 -or $bQbr[$i - 1] -ne 13)) { $lfSolto++ }
+    }
+    Assert-True ($lfSolto -gt 0) 'o arquivo sabotado ficou mesmo com LF solto'
+
+    $oQbr = [System.IO.Path]::GetTempFileName()
+    $pQbr = Start-Process -FilePath $psExe -PassThru -NoNewWindow -Wait:$false `
+                -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', `
+                              (Join-Path $projQbr 'tests\Run-All.ps1'), '-SuiteDir', $dQbr, `
+                              '-SuiteSpec', 'Test-A.ps1:1', '-SemBateria', '-SemSombra', '-Quiet' `
+                -RedirectStandardOutput $oQbr -RedirectStandardError ($oQbr + '.err')
+    $null = $pQbr.Handle
+    if (-not $pQbr.WaitForExit(180000)) { try { $pQbr.Kill() } catch { } }
+    $tQbr = (Get-Content -LiteralPath $oQbr -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+    Remove-Item -LiteralPath $oQbr, ($oQbr + '.err') -Force -ErrorAction SilentlyContinue
+
+    Assert-True (-not ($tQbr -match 'TODAS AS SUITES PASSARAM')) 'projeto com script em LF NÃO passa no portão'
+    Assert-True ($tQbr -match 'quebra de linha') 'e o motivo nomeia a quebra de linha'
+    Assert-True ($tQbr -match 'WinMonitor\.psm1') 'dizendo QUAL arquivo divergiu'
+
     <#
         Pular tem de ser DITO. Todo cenário deste arquivo passa -SemSombra por
         economia — varrer o repositório inteiro dezenas de vezes custa minutos e
