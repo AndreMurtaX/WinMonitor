@@ -99,25 +99,33 @@ try {
                        else { @(Get-PhysicalDisk -ErrorAction Stop) }
     } catch {
         return @{ ok = $true; reason = "Get-PhysicalDisk falhou: $($_.Exception.Message)"; data = [ordered]@{
-            readable        = $false
-            disks           = $null
-            hottestC        = $null
-            readErrorsMax   = $null
-            predictCovered  = $null
-            predictTotal    = $null
-            predictFailing  = $null
+            readable          = $false
+            disks             = $null
+            hottestC          = $null
+            hottestOf         = $null
+            readErrorsMax     = $null
+            readErrorsOf      = $null
+            disksTotal        = $null
+            predictEntries    = $null
+            predictTotal      = $null
+            predictFailing    = $null
+            predictUnknown    = $null
         } }
     }
 
     if (@($lidosDiscos).Count -eq 0) {
         return @{ ok = $true; reason = 'Get-PhysicalDisk respondeu sem nenhum disco: não há contador de coisa nenhuma'; data = [ordered]@{
-            readable        = $false
-            disks           = $null
-            hottestC        = $null
-            readErrorsMax   = $null
-            predictCovered  = $null
-            predictTotal    = $null
-            predictFailing  = $null
+            readable          = $false
+            disks             = $null
+            hottestC          = $null
+            hottestOf         = $null
+            readErrorsMax     = $null
+            readErrorsOf      = $null
+            disksTotal        = $null
+            predictEntries    = $null
+            predictTotal      = $null
+            predictFailing    = $null
+            predictUnknown    = $null
         } }
     }
 
@@ -132,13 +140,17 @@ try {
                            else { @($lidosDiscos | Get-StorageReliabilityCounter -ErrorAction Stop) }
     } catch {
         return @{ ok = $true; reason = "Get-StorageReliabilityCounter falhou (exige elevação): $($_.Exception.Message)"; data = [ordered]@{
-            readable        = $false
-            disks           = $null
-            hottestC        = $null
-            readErrorsMax   = $null
-            predictCovered  = $null
-            predictTotal    = $null
-            predictFailing  = $null
+            readable          = $false
+            disks             = $null
+            hottestC          = $null
+            hottestOf         = $null
+            readErrorsMax     = $null
+            readErrorsOf      = $null
+            disksTotal        = $null
+            predictEntries    = $null
+            predictTotal      = $null
+            predictFailing    = $null
+            predictUnknown    = $null
         } }
     }
 
@@ -221,26 +233,88 @@ try {
         prevê falha" seria verdade sobre o disco coberto e silêncio sobre os
         outros dois. Sai a contagem dos dois lados.
     #>
-    $cobertos  = if ($previsaoLegivel) { @($lidosPrevisao).Count } else { $null }
-    $falhando  = if ($previsaoLegivel) { @(@($lidosPrevisao) | Where-Object { $_ -and $_.PredictFailure }).Count } else { $null }
+    <#
+        A PREVISÃO É CONTAGEM DE LINHAS, E O NOME DIZ ISSO.
+
+        MSStorageDriver_FailurePredictStatus devolve InstanceName no formato do
+        driver de armazenamento, que não casa com o DeviceId de Get-PhysicalDisk
+        sem uma tabela de tradução que este projeto não tem. Casar por posição
+        seria o erro que o casamento por DeviceId dos contadores existe para
+        evitar — então aqui NÃO se casa, e o campo se chama 'predictEntries',
+        não 'predictCovered'.
+
+        A versão anterior chamava de 'cobertos' e comparava com o número de
+        discos. Medido pela décima terceira verificação: com 4 linhas para 2
+        discos, saía 'covered=4, total=2' e a ressalva DESAPARECIA — cobertura
+        parcial com cara de cobertura total, que é a frase que o cabeçalho deste
+        arquivo usa para dizer o que ele não pode fazer. A comparação era
+        '-lt', e ela só olhava um lado.
+
+        Agora a ressalva sai nos DOIS lados: linhas de menos e linhas demais são
+        as duas o mesmo fato — não dá para afirmar previsão disco a disco.
+    #>
+    $entradas = if ($previsaoLegivel) { @($lidosPrevisao).Count } else { $null }
+    $qtdDiscos = @($lidosDiscos).Count
+
+    <#
+        PredictFailure é comparado como TEXTO, com -ceq.
+
+        Medido: a string 'False' é VERDADEIRA em PowerShell, então testar o
+        objeto por veracidade fazia um disco saudável contar como falha
+        prevista; e uma linha SEM a propriedade contava como coberta e
+        não-falhando. É a doutrina do BL-D3 — '-ceq e não -eq' — que valia para
+        a saúde de disco e não tinha sido aplicada aqui.
+
+        Linha que não traz a propriedade é INDETERMINADA, não saudável.
+    #>
+    $falhando = $null
+    $indeterminadas = 0
+    if ($previsaoLegivel) {
+        $falhando = 0
+        foreach ($pv in @($lidosPrevisao)) {
+            if ($null -eq $pv -or $null -eq $pv.PredictFailure) { $indeterminadas++; continue }
+            if ([string]$pv.PredictFailure -ceq 'True') { $falhando++ }
+        }
+    }
 
     $razao = if (-not $previsaoLegivel) {
         'contadores lidos, mas MSStorageDriver_FailurePredictStatus falhou: a previsão de falha por disco fica sem cobertura'
-    } elseif ($null -ne $cobertos -and $cobertos -lt @($lidosDiscos).Count) {
-        "previsão de falha cobre $cobertos de $(@($lidosDiscos).Count) disco(s): os demais não expõem a classe, e sobre eles não há previsão nenhuma"
+    } elseif ($null -ne $entradas -and $entradas -ne $qtdDiscos) {
+        "previsão de falha devolveu $entradas linha(s) para $qtdDiscos disco(s), e InstanceName não casa com DeviceId: não há como afirmar previsão disco a disco"
+    } elseif ($indeterminadas -gt 0) {
+        "previsão de falha: $indeterminadas linha(s) sem o campo PredictFailure — indeterminado, não saudável"
     } else { $null }
+
+    <#
+        O RESUMO DO TOPO LAVAVA A AUSÊNCIA QUE A SONDA DECLARA POR DISCO.
+
+        'readErrorsMax = 0' com os dados reais desta máquina é o máximo sobre
+        DOIS de três discos — o terceiro não informa erro de leitura. Zero é a
+        leitura mais tranquilizadora possível, e ela era afirmada sem dizer
+        sobre quantos discos.
+
+        A ausência por campo estava certa na lista; o resumo a descartava. Agora
+        cada agregado vem com quantos discos de fato responderam aquele campo, e
+        uma regra que leia o máximo pode exigir a cobertura junto.
+    #>
+    $respTemp  = @(@($lista) | Where-Object { $null -ne $_.temperatureC }).Count
+    $respErros = @(@($lista) | Where-Object { $null -ne $_.readErrorsTotal }).Count
 
     @{
         ok     = $true
         reason = $razao
         data   = [ordered]@{
-            readable        = $true
-            disks           = @($lista)
-            hottestC        = $maisQuente
-            readErrorsMax   = $maiorErro
-            predictCovered  = $cobertos
-            predictTotal    = @($lidosDiscos).Count
-            predictFailing  = $falhando
+            readable          = $true
+            disks             = @($lista)
+            hottestC          = $maisQuente
+            hottestOf         = $respTemp
+            readErrorsMax     = $maiorErro
+            readErrorsOf      = $respErros
+            disksTotal        = $qtdDiscos
+            predictEntries    = $entradas
+            predictTotal      = $qtdDiscos
+            predictFailing    = $falhando
+            predictUnknown    = $(if ($previsaoLegivel) { $indeterminadas } else { $null })
         }
     }
 

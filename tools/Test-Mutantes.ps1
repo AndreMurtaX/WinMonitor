@@ -286,7 +286,7 @@ $mutantes = @(
        para='$c  = @($lidosContadores)[$lista.Count]'; suite='Test-Exam.ps1' }
 
     @{ id='BL-S3'; nome='cobertura parcial de previsao e dita';   arq='src\probes\Probe-SmartDetail.ps1'
-       de='} elseif ($null -ne $cobertos -and $cobertos -lt @($lidosDiscos).Count) {'
+       de='} elseif ($null -ne $entradas -and $entradas -ne $qtdDiscos) {'
        para='} elseif ($false) {'; suite='Test-Exam.ps1' }
 
     <#
@@ -379,6 +379,26 @@ $mutantes = @(
 
     @{ id='BL-W8'; nome='sem modulo a ronda sai com 2';          arq='src\Invoke-Patrol.ps1'
        de='exit 2'; para='exit 0'; suite='Test-Patrol.ps1' }
+    <#
+        B-13.2 e B-13.3, medidos vivos pela 13a verificacao na sonda que entrou
+        no dia anterior. Ela nasceu dos dados de UMA maquina, e o verificador
+        achou as formas que eu nao previ.
+    #>
+    @{ id='BL-S4'; nome='ressalva de previsao nos DOIS sentidos'; arq='src\probes\Probe-SmartDetail.ps1'
+       de='} elseif ($null -ne $entradas -and $entradas -ne $qtdDiscos) {'
+       para='} elseif ($null -ne $entradas -and $entradas -lt $qtdDiscos) {'; suite='Test-Exam.ps1' }
+
+    @{ id='BL-S5'; nome='o resumo diz sobre quantos discos fala'; arq='src\probes\Probe-SmartDetail.ps1'
+       de='$respErros = @(@($lista) | Where-Object { $null -ne $_.readErrorsTotal }).Count'
+       para='$respErros = $qtdDiscos'; suite='Test-Exam.ps1' }
+
+    @{ id='BL-S6'; nome='PredictFailure comparado como TEXTO';    arq='src\probes\Probe-SmartDetail.ps1'
+       de="if ([string]`$pv.PredictFailure -ceq 'True') { `$falhando++ }"
+       para='if ($pv.PredictFailure) { $falhando++ }'; suite='Test-Exam.ps1' }
+
+    @{ id='BL-S7'; nome='linha sem o campo e INDETERMINADA';      arq='src\probes\Probe-SmartDetail.ps1'
+       de='if ($null -eq $pv -or $null -eq $pv.PredictFailure) { $indeterminadas++; continue }'
+       para='if ($false) { $indeterminadas++; continue }'; suite='Test-Exam.ps1' }
     @{ id='A5';    nome='regra malformada conta como lacuna';     arq='src\WinMonitor.Rules.psm1'
        de='$lacunas = $semFonte.Count + $malformadas.Count + $semDado.Count'
        para='$lacunas = $semFonte.Count + $semDado.Count'; suite='Test-Rules.ps1' }

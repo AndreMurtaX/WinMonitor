@@ -523,10 +523,56 @@ try {
         silêncio sobre os outros dois — cobertura parcial com cara de cobertura
         total é o defeito que este projeto existe para não ter.
     #>
-    Assert-Equal 1 $rs.data.predictCovered 'a previsão de falha cobre um disco'
+    Assert-Equal 1 $rs.data.predictEntries 'a previsão de falha devolveu UMA linha'
     Assert-Equal 3 $rs.data.predictTotal 'de três que existem'
     Assert-Equal 0 $rs.data.predictFailing 'e nenhum dos cobertos prevê falha'
-    Assert-True ($rs.reason -match 'cobre 1 de 3') 'e a razão DIZ que a cobertura é parcial'
+
+    <#
+        O RESUMO DO TOPO NÃO PODE LAVAR A AUSÊNCIA QUE A LISTA DECLARA.
+
+        'readErrorsMax = 0' aqui é o máximo sobre DOIS de três discos — o disco
+        1 não informa erro de leitura. Zero é a leitura mais tranquilizadora
+        possível, e ela era afirmada sem dizer sobre quantos discos. A ausência
+        por campo estava certa na lista, e o resumo a descartava.
+    #>
+    Assert-Equal 3 $rs.data.disksTotal 'o resumo diz quantos discos existem'
+    Assert-Equal 3 $rs.data.hottestOf 'os três responderam temperatura'
+    Assert-Equal 2 $rs.data.readErrorsOf 'mas só DOIS responderam erro de leitura'
+
+    <#
+        E A PREVISÃO É CONTAGEM DE LINHAS NOS DOIS SENTIDOS.
+
+        A comparação era '-lt', e olhava um lado só: com 4 linhas para 2 discos
+        saía 'covered=4, total=2' e a ressalva DESAPARECIA — cobertura parcial
+        com cara de cobertura total, dentro do arquivo cujo cabeçalho usa essa
+        frase para dizer o que ele não pode fazer.
+
+        InstanceName não casa com DeviceId sem tabela de tradução, então aqui
+        não se casa: o campo se chama 'predictEntries', e linhas de menos e
+        linhas demais são o MESMO fato — não dá para afirmar disco a disco.
+    #>
+    $rDemais = & $sondaSmart -Discos @($discosS[0], $discosS[1]) -Contadores $contadoresS `
+                   -Previsao @(1..4 | ForEach-Object { [pscustomobject]@{ InstanceName = "d$_"; PredictFailure = $false } })
+    Assert-Equal 4 $rDemais.data.predictEntries 'quatro linhas de previsão para dois discos: a contagem é de LINHAS'
+    Assert-Equal 2 $rDemais.data.predictTotal 'e o total continua sendo o de discos'
+    Assert-True ($rDemais.reason -match '4 linha\(s\) para 2 disco\(s\)') 'e a ressalva NÃO some quando há linhas DEMAIS'
+
+    <#
+        PredictFailure comparado como TEXTO, com -ceq. A string 'False' é
+        VERDADEIRA em PowerShell: testar o objeto por veracidade fazia um disco
+        saudável contar como falha prevista. É a doutrina do BL-D3, que valia
+        para a saúde de disco e não tinha sido aplicada aqui.
+    #>
+    $rTexto = & $sondaSmart -Discos $discosS -Contadores $contadoresS `
+                  -Previsao @([pscustomobject]@{ InstanceName = 'd0'; PredictFailure = 'False' })
+    Assert-Equal 0 $rTexto.data.predictFailing "a string 'False' NAO conta como falha prevista"
+
+    # E linha sem o campo é INDETERMINADA, não saudável.
+    $rSemCampo = & $sondaSmart -Discos $discosS -Contadores $contadoresS `
+                     -Previsao @([pscustomobject]@{ InstanceName = 'd0' })
+    Assert-Equal 1 $rSemCampo.data.predictUnknown 'linha sem PredictFailure é contada como indeterminada'
+    Assert-Equal 0 $rSemCampo.data.predictFailing 'e não é somada como falha'
+    Assert-True ($rs.reason -match '1 linha\(s\) para 3 disco\(s\)') 'e a razão DIZ que não dá para afirmar previsão disco a disco'
 
     <#
         O CASAMENTO É POR DeviceId, NÃO POR POSIÇÃO. Se um disco não devolve
@@ -557,7 +603,7 @@ try {
     Assert-Null $rn.data.disks 'a lista é NULA, não vazia'
     Assert-Null $rn.data.hottestC 'não há disco mais quente quando não se leu disco nenhum'
     Assert-Null $rn.data.readErrorsMax 'nem maior erro de leitura'
-    Assert-Null $rn.data.predictCovered 'nem cobertura de previsão'
+    Assert-Null $rn.data.predictEntries 'nem cobertura de previsão'
 
     # Zero disco não é zero contador: é ausência de objeto a medir.
     $rz = & $sondaSmart -Discos @() -Contadores @() -Previsao @()

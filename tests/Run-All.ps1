@@ -111,7 +111,7 @@ param(
     #>
     [switch]$SemSombra,
     [int]$BateriaTimeoutSec = 5400,
-    [int]$MutantesMin = 82,
+    [int]$MutantesMin = 86,
     <#
         Pisos das duas varreduras, pela mesma razão do piso por suíte: varredura
         que encolhe fica vacuamente verde. Medido: reduzir a guarda de LF a
@@ -162,7 +162,7 @@ $suites = @(
     @{ file = 'Test-Laudo.ps1';       min = 170 }
     @{ file = 'Test-LaudoDriver.ps1'; min = 37  }
     @{ file = 'Test-Report.ps1';      min = 93  }
-    @{ file = 'Test-Exam.ps1';        min = 114 }
+    @{ file = 'Test-Exam.ps1';        min = 123 }
     @{ file = 'Test-Gate.ps1';        min = 127 }
     @{ file = 'Test-Drivers.ps1';     min = 80  }
     @{ file = 'Test-Patrol.ps1';      min = 52  }
