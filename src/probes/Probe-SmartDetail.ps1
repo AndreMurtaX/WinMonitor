@@ -66,7 +66,26 @@ param(
     [object[]]$Discos,
     [object[]]$Contadores,
     [object[]]$Previsao,
-    [switch]$Falhar
+    [switch]$Falhar,
+    <#
+        -FalharContadores e SEPARADO de -Falhar, e a separacao e o ponto.
+
+        -Falhar estoura no Get-PhysicalDisk, que funciona SEM elevacao. O
+        caminho que esta maquina de fato percorre em sessao comum e o outro: os
+        discos sao lidos, e o Get-StorageReliabilityCounter e que devolve acesso
+        negado. Medido agora, sem elevacao:
+
+            readable=False  reason="Get-StorageReliabilityCounter falhou
+                                    (exige elevacao): ..."
+
+        Test-Exam afirmava que -Falhar percorria esse caminho. Nao percorria: o
+        catch dos contadores nunca executou sob teste nenhum, e um mutante que
+        trocava ok=$true por ok=$false ali sobrevivia as nove suites - em
+        producao, essa troca muda o exame de "sonda com ressalva e dados nulos
+        declarados" para "sonda falhou", que e exatamente a distincao que esta
+        sonda existe para fazer.
+    #>
+    [switch]$FalharContadores
 )
 
 $null = $Facts, $TimeoutSec, $WindowDays
@@ -136,6 +155,7 @@ try {
     #>
     $lidosContadores = $null
     try {
+        if ($FalharContadores) { throw 'Acesso a um recurso CIM nao estava disponivel para o cliente.' }
         $lidosContadores = if ($PSBoundParameters.ContainsKey('Contadores')) { @($Contadores) }
                            else { @($lidosDiscos | Get-StorageReliabilityCounter -ErrorAction Stop) }
     } catch {

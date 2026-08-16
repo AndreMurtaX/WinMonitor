@@ -399,6 +399,23 @@ $mutantes = @(
     @{ id='BL-S7'; nome='linha sem o campo e INDETERMINADA';      arq='src\probes\Probe-SmartDetail.ps1'
        de='if ($null -eq $pv -or $null -eq $pv.PredictFailure) { $indeterminadas++; continue }'
        para='if ($false) { $indeterminadas++; continue }'; suite='Test-Exam.ps1' }
+    <#
+        B-13.5: contador negado NAO e falha da sonda.
+
+        O catch do Get-StorageReliabilityCounter e o caminho que ESTA maquina
+        percorre em sessao comum, e nenhum teste o executava - o comentario do
+        Test-Exam afirmava que -Falhar passava por ali, e -Falhar estoura antes,
+        no Get-PhysicalDisk, que funciona sem elevacao.
+
+        Em producao a troca muda o exame de "sonda com ressalva e dados nulos
+        declarados" para "sonda falhou". Sao coisas diferentes: a primeira diz o
+        que nao foi possivel medir, a segunda joga fora tudo que a sonda tinha a
+        dizer sobre si.
+    #>
+    @{ id='BL-S8'; nome='contador negado nao e falha da sonda';   arq='src\probes\Probe-SmartDetail.ps1'
+       de="return @{ ok = `$true; reason = `"Get-StorageReliabilityCounter falhou (exige elevação): `$(`$_.Exception.Message)`""
+       para="return @{ ok = `$false; reason = `"Get-StorageReliabilityCounter falhou (exige elevação): `$(`$_.Exception.Message)`""
+       suite='Test-Exam.ps1' }
     @{ id='A5';    nome='regra malformada conta como lacuna';     arq='src\WinMonitor.Rules.psm1'
        de='$lacunas = $semFonte.Count + $malformadas.Count + $semDado.Count'
        para='$lacunas = $semFonte.Count + $semDado.Count'; suite='Test-Rules.ps1' }

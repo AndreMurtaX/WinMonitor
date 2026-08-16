@@ -597,6 +597,27 @@ try {
         sessão comum, e o desfecho tem de ser "não consegui ler" — nunca uma
         lista de contadores zerados, que a regra leria como disco impecável.
     #>
+    <#
+        O CAMINHO QUE ESTA MÁQUINA DE FATO PERCORRE, e que nenhum teste executava.
+
+        O comentário anterior aqui dizia que '-Falhar' era esse caminho. Não era:
+        -Falhar estoura no Get-PhysicalDisk, que funciona SEM elevação. Em sessão
+        comum os discos são lidos normalmente e é o Get-StorageReliabilityCounter
+        que devolve acesso negado — o segundo catch, que nunca executou sob teste.
+
+        Medido: um mutante trocando 'ok = $true' por 'ok = $false' ali sobrevivia
+        às nove suítes. Em produção essa troca muda o exame de "sonda com ressalva
+        e dados nulos declarados" para "sonda falhou" — e é exatamente essa a
+        distinção que a sonda existe para fazer.
+    #>
+    $rc = & $sondaSmart -Discos $discosS -FalharContadores
+    Assert-True $rc.ok 'contador negado NÃO é falha da sonda: ela cumpriu o contrato dela'
+    Assert-True (-not $rc.data.readable) 'ela declara que não conseguiu ler os contadores'
+    Assert-True ($rc.reason -match 'exige eleva') 'com o motivo que o operador precisa ler'
+    Assert-Null $rc.data.disks 'e a lista é NULA — nada de contadores zerados'
+    Assert-Null $rc.data.readErrorsMax 'nem maior erro de leitura'
+    Assert-Null $rc.data.hottestC 'nem disco mais quente'
+
     $rn = & $sondaSmart -Falhar
     Assert-True $rn.ok 'a sonda não explode quando a leitura falha'
     Assert-True (-not $rn.data.readable) 'ela declara que não conseguiu ler'
