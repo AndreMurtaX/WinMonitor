@@ -199,6 +199,88 @@ try {
     }
 
     # =====================================================================
+    Start-TestGroup 'Saúde de disco: o degrau que não exige privilégio  [MUTAÇÃO]'
+
+    <#
+        Eu tinha declarado saúde de disco bloqueada por elevação. A conclusão
+        estava um passo além da medição — de novo. Item por item, sem elevação:
+
+            Get-PhysicalDisk -> HealthStatus            OK
+            Get-StorageReliabilityCounter               NEGADO
+            MSStorageDriver_FailurePredictStatus        NEGADO
+
+        O que exige administrador é a CONTAGEM de setores realocados. O
+        VEREDITO de saúde, que o Windows deriva do SMART, é legível por
+        qualquer conta.
+    #>
+    $sondaDisco = Join-Path $root 'src\probes\Probe-DiskHealth.ps1'
+    $rd = & $sondaDisco
+
+    Assert-True $rd.ok 'a sonda de saúde de disco roda sem elevação'
+    Assert-True ($rd.data.readable -eq $true) 'e declara que conseguiu ler'
+    Assert-True (@($rd.data.disks).Count -ge 1) 'com pelo menos um disco'
+    Assert-True ($rd.data.unhealthy -is [int]) 'e a contagem de doentes é um número'
+
+    foreach ($d in @($rd.data.disks)) {
+        Assert-True (-not [string]::IsNullOrWhiteSpace($d.health)) "o disco $($d.id) traz veredito de saúde"
+        Assert-True (-not [string]::IsNullOrWhiteSpace($d.name))   'e o nome, para o laudo poder citá-lo'
+    }
+
+    <#
+        A TRAVA QUE IMPORTA: só 'Healthy' conta como saudável.
+
+        Qualquer outro valor — Warning, Unhealthy, ou um que a Microsoft
+        acrescente amanhã — é contado como doente. Errar para o lado de
+        perguntar é barato; errar para o lado de calar é o que este projeto não
+        faz. E é ela que a regra R-DISK-HEALTH-DEGRADED consome.
+    #>
+    $contados = @($rd.data.disks | Where-Object { $_.health -ne 'Healthy' }).Count
+    Assert-Equal $contados $rd.data.unhealthy 'a contagem de doentes bate com os discos que não estão Healthy'
+
+    <#
+        OS RAMOS QUE A MÁQUINA REAL NÃO ALCANÇA.
+
+        Os três discos daqui estão Healthy, então o caminho de disco doente e o
+        de leitura negada nunca executam — e as duas mutações sobreviviam:
+        com todos Healthy, '-eq Healthy' e '-ne Unhealthy' dão o mesmo
+        resultado. O teste media o caminho feliz e declarava a trava defendida.
+
+        'Warning' é o degrau que o Windows usa para avisar ANTES de desistir do
+        disco. Aceitá-lo como saudável é perder exatamente o aviso.
+    #>
+    $sinteticos = @(
+        [pscustomobject]@{ DeviceId='0'; FriendlyName='Disco Sao';      MediaType='SSD'; HealthStatus='Healthy';   OperationalStatus='OK' }
+        [pscustomobject]@{ DeviceId='1'; FriendlyName='Disco Avisando'; MediaType='HDD'; HealthStatus='Warning';   OperationalStatus='Degraded' }
+        [pscustomobject]@{ DeviceId='2'; FriendlyName='Disco Morrendo'; MediaType='HDD'; HealthStatus='Unhealthy'; OperationalStatus='Lost Communication' }
+    )
+    $rs = & $sondaDisco -Discos $sinteticos
+    Assert-Equal 2 $rs.data.unhealthy 'Warning E Unhealthy contam como doentes — não só Unhealthy'
+    Assert-True ($rs.data.readable -eq $true) 'e a leitura continua declarada como bem-sucedida'
+
+    # Valor que a Microsoft acrescente amanhã também conta como doente.
+    $futuro = @([pscustomobject]@{ DeviceId='9'; FriendlyName='X'; MediaType='SSD'; HealthStatus='ValorNovoQueAindaNaoExiste'; OperationalStatus='?' })
+    Assert-Equal 1 (& $sondaDisco -Discos $futuro).data.unhealthy 'valor desconhecido conta como doente: errar para o lado de perguntar'
+
+    <#
+        E o caminho de leitura negada: NULO, nunca lista vazia. Lista vazia
+        seria lida pela regra como "nenhum disco doente" — a ausência virando
+        boa notícia, que é o modo de falha que este projeto existe para não ter.
+    #>
+    $rf = & $sondaDisco -Falhar
+    Assert-True ($rf.ok) 'a sonda não explode quando a leitura falha'
+    Assert-True ($rf.data.readable -eq $false) 'ela declara que não conseguiu ler'
+    Assert-True ($null -eq $rf.data.disks) 'e a lista é NULA, não vazia'
+    Assert-True ($null -eq $rf.data.unhealthy) 'e a contagem é NULA, não zero'
+    Assert-True (-not [string]::IsNullOrWhiteSpace($rf.reason)) 'com o motivo registrado'
+
+    # E a granularidade que continua faltando permanece DECLARADA, não sumida.
+    $exDisco = & (Join-Path $root 'src\Invoke-Exam.ps1') -PassThru -NoWrite
+    $cobDisco = if ($exDisco.coverage -is [System.Collections.IDictionary]) { @($exDisco.coverage.Keys) }
+                else { @($exDisco.coverage.PSObject.Properties.Name) }
+    Assert-True ($cobDisco -contains 'smartDetalhado') 'cobrir o degrau de baixo NÃO cala o de cima: a contagem SMART fina segue declarada como lacuna'
+    Assert-True ($null -ne $exDisco.dsk) 'e o exame traz o bloco de saúde de disco'
+
+    # =====================================================================
     Start-TestGroup 'Invoke-Exam: sonda ausente vira lacuna, nunca silêncio'
 
     $ex = & (Join-Path $root 'src\Invoke-Exam.ps1') -PassThru -NoWrite
@@ -215,9 +297,9 @@ try {
     #>
     $chaves = if ($ex.coverage -is [System.Collections.IDictionary]) { @($ex.coverage.Keys) }
               else { @($ex.coverage.PSObject.Properties.Name) }
-    Assert-True ($chaves -contains 'smart')   'SMART consta como lacuna declarada'
+    Assert-True ($chaves -contains 'smartDetalhado') 'a contagem SMART fina consta como lacuna declarada'
     Assert-True ($chaves -contains 'cpuTemp') 'temperatura de CPU também'
-    Assert-True (($ex.coverage['smart'] -match 'eleva') -or ($ex.coverage.smart -match 'eleva')) 'e a lacuna do SMART diz que falta elevação'
+    Assert-True (($ex.coverage['smartDetalhado'] -match 'eleva') -or ($ex.coverage.smartDetalhado -match 'eleva')) 'e ela diz que falta elevação'
 
     <#
         O exame nunca inventa o bloco de uma sonda que FALHOU. Um {} vazio seria

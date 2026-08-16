@@ -183,6 +183,22 @@
                                      "url":  "",
                                      "verifiedAt":  ""
                                  }
+                  },
+                  {
+                      "id":  "R-DISK-HEALTH-DEGRADED",
+                      "kind":  "absolute",
+                      "subsystem":  "sto",
+                      "severity":  "agir",
+                      "claim":  "O Windows deixou de considerar algum disco saudavel",
+                      "metric":  "dsk.unhealthy",
+                      "operator":  "gt",
+                      "value":  0,
+                      "source":  {
+                                     "kind":  "policy",
+                                     "text":  "HealthStatus vem do proprio Windows, derivado do SMART do disco. Nao ha limiar de fabricante a citar: qualquer valor diferente de Healthy ja e o sistema operacional declarando que parou de considerar o disco sao, e isso merece acao. O limiar e zero pela mesma razao do WHEA. E grosso de proposito - um disco que comecou a realocar setores continua Healthy por um bom tempo, e essa granularidade fica declarada como lacuna em exam.missing ate haver elevacao.",
+                                     "url":  "",
+                                     "verifiedAt":  "2026-08-16"
+                                 }
                   }
               ]
 }

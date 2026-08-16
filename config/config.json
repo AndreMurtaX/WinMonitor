@@ -40,16 +40,20 @@
                                 {
                                     "name":  "Events",
                                     "key":  "evt"
+                                },
+                                {
+                                    "name":  "DiskHealth",
+                                    "key":  "dsk"
                                 }
                             ],
                  "missing":  [
                                  {
-                                     "key":  "smart",
-                                     "reason":  "SMART nao coletado: Get-StorageReliabilityCounter exige elevacao (medido: falha com \u0027acesso a um recurso CIM nao estava disponivel\u0027 em sessao comum). Enquanto isso, R-DISK-REALLOCATED-SECTORS fica declarada como nao verificada."
+                                     "key":  "smartDetalhado",
+                                     "reason":  "Contagem SMART fina (setores realocados, horas ligado, temperatura do disco) nao coletada: Get-StorageReliabilityCounter e MSStorageDriver_FailurePredictStatus exigem elevacao - medido, os dois devolvem acesso negado em sessao comum. O VEREDITO de saude que o Windows deriva do SMART e legivel sem privilegio e esta coberto pela sonda DiskHealth; o que falta e a granularidade que permitiria ver um disco comecando a realocar setores ANTES de ele deixar de ser Healthy."
                                  },
                                  {
                                      "key":  "cpuTemp",
-                                     "reason":  "Temperatura de CPU nao coletada: exige driver de kernel (LibreHardwareMonitor), que ainda nao foi baixado nem testado contra o antivirus desta maquina. Enquanto isso, throttling de CPU e inferido pela frequencia efetiva."
+                                     "reason":  "Temperatura de CPU nao coletada: MSAcpi_ThermalZoneTemperature exige elevacao (medido: acesso negado) e a alternativa e driver de kernel (LibreHardwareMonitor), que ainda nao foi baixado nem testado contra o antivirus. Enquanto isso, throttling de CPU e inferido pela frequencia efetiva."
                                  }
                              ]
              },

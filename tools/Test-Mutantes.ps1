@@ -198,6 +198,17 @@ $mutantes = @(
     @{ id='BL-95c'; nome='ramo do dia FECHADO na cobertura';      arq='src\WinMonitor.Report.psm1'
        de='if ($ehHoje) {'; para='if ($true) {'; suite='Test-Report.ps1' }
 
+    <#
+        Saude de disco: so 'Healthy' conta como saudavel. A mutacao troca a
+        comparacao por "nao e Unhealthy", que aceita Warning como sao - o
+        degrau que o Windows usa justamente para avisar antes de desistir.
+    #>
+    @{ id='BL-D1';  nome='so Healthy conta como saudavel';        arq='src\probes\Probe-DiskHealth.ps1'
+       de='$ok = ($saude -eq ''Healthy'')'; para='$ok = ($saude -ne ''Unhealthy'')'; suite='Test-Exam.ps1' }
+
+    @{ id='BL-D2';  nome='sonda de disco que falha devolve NULO'; arq='src\probes\Probe-DiskHealth.ps1'
+       de='disks    = $null'; para='disks    = @()'; suite='Test-Exam.ps1' }
+
     @{ id='A5';    nome='regra malformada conta como lacuna';     arq='src\WinMonitor.Rules.psm1'
        de='$lacunas = $semFonte.Count + $malformadas.Count + $semDado.Count'
        para='$lacunas = $semFonte.Count + $semDado.Count'; suite='Test-Rules.ps1' }
