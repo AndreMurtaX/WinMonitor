@@ -111,7 +111,7 @@ param(
     #>
     [switch]$SemSombra,
     [int]$BateriaTimeoutSec = 5400,
-    [int]$MutantesMin = 63,
+    [int]$MutantesMin = 74,
     <#
         Pisos das duas varreduras, pela mesma razão do piso por suíte: varredura
         que encolhe fica vacuamente verde. Medido: reduzir a guarda de LF a
@@ -122,8 +122,8 @@ param(
         Atualizados à mão quando o projeto cresce. Se se ajustassem sozinhos,
         não seriam piso.
     #>
-    [int]$ArquivosCrlfMin = 39,
-    [int]$ArquivosSombraMin = 39
+    [int]$ArquivosCrlfMin = 41,
+    [int]$ArquivosSombraMin = 41
 )
 
 <#
@@ -162,9 +162,10 @@ $suites = @(
     @{ file = 'Test-Laudo.ps1';       min = 170 }
     @{ file = 'Test-LaudoDriver.ps1'; min = 37  }
     @{ file = 'Test-Report.ps1';      min = 93  }
-    @{ file = 'Test-Exam.ps1';        min = 81  }
-    @{ file = 'Test-Gate.ps1';        min = 115 }
+    @{ file = 'Test-Exam.ps1';        min = 114 }
+    @{ file = 'Test-Gate.ps1';        min = 125 }
     @{ file = 'Test-Drivers.ps1';     min = 78  }
+    @{ file = 'Test-Patrol.ps1';      min = 37  }
 )
 
 if ($SuiteSpec) {
@@ -512,8 +513,21 @@ if ($SemSombra) {
         $txtSom = (Get-Content -LiteralPath $somOut -Raw -Encoding OEM -ErrorAction SilentlyContinue) + "`n" +
                   (Get-Content -LiteralPath ($somOut + '.err') -Raw -Encoding OEM -ErrorAction SilentlyContinue)
         if (-not $Quiet) { $txtSom.TrimEnd() }
-        if ($psom.ExitCode -ne 0) {
-            [void]$falhas.Add('varredura de sombra de parâmetro: há variável local colidindo com parâmetro só na caixa')
+        <#
+            OS DOIS DESFECHOS SAO DIFERENTES, e o portao jogava fora a distincao
+            que a propria varredura passou a fazer.
+
+            Codigo 1 e colisao encontrada. Codigo 2 e arquivo que ela NAO
+            CONSEGUIU analisar - a falha fechada que substituiu a falha aberta.
+            Mapear os dois para "ha variavel colidindo" produz vermelho na
+            direcao segura com diagnostico factualmente FALSO, e a doutrina
+            escrita neste repositorio e que vermelho com mensagem errada e
+            exatamente como alguem aprende a desligar o portao.
+        #>
+        if ($psom.ExitCode -eq 2) {
+            [void]$falhas.Add('varredura de sombra de parametro: ha script que ela NAO conseguiu analisar - nao olhar nao e nao ter nada')
+        } elseif ($psom.ExitCode -ne 0) {
+            [void]$falhas.Add('varredura de sombra de parametro: ha variavel local colidindo com parametro so na caixa')
         }
         <#
             E O PISO DELA TAMBÉM É CONFERIDO AQUI, do lado de fora.

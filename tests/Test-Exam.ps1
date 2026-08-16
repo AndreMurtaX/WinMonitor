@@ -355,7 +355,23 @@ try {
               else { @($ex.coverage.PSObject.Properties.Name) }
     Assert-True ($chaves -contains 'smartDetalhado') 'a contagem SMART fina consta como lacuna declarada'
     Assert-True ($chaves -contains 'cpuTemp') 'temperatura de CPU também'
-    Assert-True (($ex.coverage['smartDetalhado'] -match 'eleva') -or ($ex.coverage.smartDetalhado -match 'eleva')) 'e ela diz que falta elevação'
+    <#
+        A LACUNA MUDOU DE MOTIVO, E A ASSERÇÃO TINHA DE MUDAR JUNTO.
+
+        Ela cobrava a palavra 'eleva' — e estava certa enquanto o que faltava
+        era elevação. Depois que a ronda passou a rodar com RunLevel
+        HighestAvailable e a sonda SmartDetail entrou, elevação deixou de ser o
+        que falta: o que falta é a tabela de decodificação por fabricante dos
+        512 bytes crus, que não existe publicada para citar.
+
+        Uma asserção que continuasse cobrando 'eleva' obrigaria o texto a mentir
+        para ficar verde. Ela agora cobra o motivo VERDADEIRO, e proíbe o antigo:
+        culpar elevação depois que ela existe seria lacuna declarada com razão
+        obsoleta, que é pior que lacuna sem razão — parece medida e não é.
+    #>
+    $razaoSmart = if ($ex.coverage -is [System.Collections.IDictionary]) { [string]$ex.coverage['smartDetalhado'] } else { [string]$ex.coverage.smartDetalhado }
+    Assert-True ($razaoSmart -match 'SETORES REALOCADOS') 'e ela nomeia o que de fato ainda falta: contagem por setor realocado'
+    Assert-True (-not ($razaoSmart -match 'exigem elevacao')) 'e NÃO culpa mais a elevação, que deixou de ser o obstáculo'
 
     <#
         O exame nunca inventa o bloco de uma sonda que FALHOU. Um {} vazio seria
@@ -452,6 +468,113 @@ try {
     } finally {
         Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
     }
+
+    # =====================================================================
+    Start-TestGroup 'SMART fino: ausência POR CAMPO, e cobertura parcial declarada  [MUTAÇÃO]'
+
+    <#
+        A SONDA NASCE DO QUE A MÁQUINA REAL ENTREGOU, não do que a documentação
+        promete. Medido nesta máquina, com a ronda já rodando elevada:
+
+            disco 0: temp=38  horas=13006  erros=0     desgaste=0
+            disco 2: temp=35  horas=4053   erros=0     desgaste=0
+            disco 1: temp=50  horas=VAZIO  erros=VAZIO desgaste=0
+
+        O disco 1 responde temperatura e não responde horas nem erros — e é o
+        mais quente dos três. Se a sonda somasse campos, aquele vazio viraria
+        zero, e "zero erro de leitura" é a leitura mais tranquilizadora possível
+        para um disco que NÃO INFORMOU erro de leitura.
+
+        Os sintéticos abaixo reproduzem exatamente essa máquina.
+    #>
+    $sondaSmart = Join-Path $root 'src\probes\Probe-SmartDetail.ps1'
+    Assert-True (Test-Path $sondaSmart) 'a sonda de SMART fino existe'
+
+    $discosS = @(
+        [pscustomobject]@{ DeviceId = '0'; FriendlyName = 'NVMe do sistema' }
+        [pscustomobject]@{ DeviceId = '1'; FriendlyName = 'NVMe calado' }
+        [pscustomobject]@{ DeviceId = '2'; FriendlyName = 'SSD de dados' }
+    )
+    $contadoresS = @(
+        [pscustomobject]@{ DeviceId = '0'; Temperature = 38; PowerOnHours = 13006; ReadErrorsTotal = 0;  Wear = 0 }
+        [pscustomobject]@{ DeviceId = '1'; Temperature = 50; PowerOnHours = '';    ReadErrorsTotal = ''; Wear = 0 }
+        [pscustomobject]@{ DeviceId = '2'; Temperature = 35; PowerOnHours = 4053;  ReadErrorsTotal = 0;  Wear = 0 }
+    )
+    $previsaoS = @([pscustomobject]@{ InstanceName = 'disco0'; PredictFailure = $false })
+
+    $rs = & $sondaSmart -Discos $discosS -Contadores $contadoresS -Previsao $previsaoS
+    Assert-True $rs.data.readable 'com contadores respondendo, a leitura é declarada bem-sucedida'
+    $ds = @($rs.data.disks)
+    Assert-Equal 3 $ds.Count 'os três discos entram'
+
+    Assert-Equal 50 $ds[1].temperatureC 'o disco calado informa temperatura'
+    Assert-Null $ds[1].powerOnHours 'e horas ligado fica NULO, não zero'
+    Assert-Null $ds[1].readErrorsTotal 'e erros de leitura também: ausência não é boa notícia'
+    Assert-True (@($ds[1].unanswered) -contains 'powerOnHours') 'e o campo sem resposta é DECLARADO'
+    Assert-True (@($ds[1].unanswered) -contains 'readErrorsTotal') 'os dois, nominalmente'
+    Assert-Equal 0 (@($ds[0].unanswered)).Count 'o disco que responde tudo não declara ausência nenhuma'
+
+    Assert-Equal 50 $rs.data.hottestC 'o mais quente é o disco que menos informa sobre si'
+    Assert-Equal 0 $rs.data.readErrorsMax 'e o maior erro de leitura vem só dos discos que responderam'
+
+    <#
+        COBERTURA PARCIAL DECLARADA. A classe de previsão respondeu por UM dos
+        três discos. "Nenhum disco prevê falha" seria verdade sobre o coberto e
+        silêncio sobre os outros dois — cobertura parcial com cara de cobertura
+        total é o defeito que este projeto existe para não ter.
+    #>
+    Assert-Equal 1 $rs.data.predictCovered 'a previsão de falha cobre um disco'
+    Assert-Equal 3 $rs.data.predictTotal 'de três que existem'
+    Assert-Equal 0 $rs.data.predictFailing 'e nenhum dos cobertos prevê falha'
+    Assert-True ($rs.reason -match 'cobre 1 de 3') 'e a razão DIZ que a cobertura é parcial'
+
+    <#
+        O CASAMENTO É POR DeviceId, NÃO POR POSIÇÃO. Se um disco não devolve
+        contador, casar por posição faz todos os seguintes deslizarem e cada
+        número passa a descrever o disco errado — o pior desfecho possível,
+        porque tudo continua parecendo medido.
+    #>
+    $foraDeOrdem = @(
+        [pscustomobject]@{ DeviceId = '2'; Temperature = 35; PowerOnHours = 4053;  ReadErrorsTotal = 7; Wear = 0 }
+        [pscustomobject]@{ DeviceId = '0'; Temperature = 38; PowerOnHours = 13006; ReadErrorsTotal = 0; Wear = 0 }
+    )
+    $rf = & $sondaSmart -Discos $discosS -Contadores $foraDeOrdem -Previsao $previsaoS
+    $df = @($rf.data.disks)
+    Assert-Equal 13006 $df[0].powerOnHours 'contador fora de ordem chega no disco certo'
+    Assert-Equal 7 $df[2].readErrorsTotal 'e o do disco 2 também, com o valor dele'
+    Assert-Null $df[1].temperatureC 'o disco SEM contador fica nulo em vez de herdar o do vizinho'
+    Assert-Equal 4 (@($df[1].unanswered)).Count 'com os quatro campos declarados sem resposta'
+    Assert-Equal 7 $rf.data.readErrorsMax 'e o maior erro de leitura é o que de fato foi lido'
+
+    <#
+        SEM ELEVAÇÃO, NADA DE ZEROS. É o caminho que esta máquina percorre em
+        sessão comum, e o desfecho tem de ser "não consegui ler" — nunca uma
+        lista de contadores zerados, que a regra leria como disco impecável.
+    #>
+    $rn = & $sondaSmart -Falhar
+    Assert-True $rn.ok 'a sonda não explode quando a leitura falha'
+    Assert-True (-not $rn.data.readable) 'ela declara que não conseguiu ler'
+    Assert-Null $rn.data.disks 'a lista é NULA, não vazia'
+    Assert-Null $rn.data.hottestC 'não há disco mais quente quando não se leu disco nenhum'
+    Assert-Null $rn.data.readErrorsMax 'nem maior erro de leitura'
+    Assert-Null $rn.data.predictCovered 'nem cobertura de previsão'
+
+    # Zero disco não é zero contador: é ausência de objeto a medir.
+    $rz = & $sondaSmart -Discos @() -Contadores @() -Previsao @()
+    Assert-True (-not $rz.data.readable) 'zero disco NÃO é leitura bem-sucedida'
+    Assert-Null $rz.data.hottestC 'e não produz temperatura nenhuma'
+
+    # A lacuna que CONTINUA aberta, e continua declarada.
+    $cfgSmt = Get-Content (Join-Path $root 'config\config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $lacunasSmt = @($cfgSmt.exam.missing | ForEach-Object { $_.key })
+    Assert-True ($lacunasSmt -contains 'smartDetalhado') 'cobrir o degrau de baixo NÃO fecha a lacuna do setor realocado'
+    $razaoSmt = ($cfgSmt.exam.missing | Where-Object { $_.key -eq 'smartDetalhado' }).reason
+    Assert-True ($razaoSmt -match 'SETORES REALOCADOS') 'e a lacuna agora nomeia exatamente o que ainda falta'
+    Assert-True ($razaoSmt -match 'inventar numero') 'dizendo por que decodificar sem fonte não é opção'
+
+    # E a sonda está registrada no exame, com a chave que as regras consomem.
+    $sondasCfg = @($cfgSmt.exam.probes | ForEach-Object { "$($_.name):$($_.key)" })
+    Assert-True ($sondasCfg -contains 'SmartDetail:smt') 'a sonda de SMART fino está no exame'
 
 } finally { }
 

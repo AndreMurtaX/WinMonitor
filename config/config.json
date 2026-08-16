@@ -44,16 +44,20 @@
                                 {
                                     "name":  "DiskHealth",
                                     "key":  "dsk"
+                                },
+                                {
+                                    "name":  "SmartDetail",
+                                    "key":  "smt"
                                 }
                             ],
                  "missing":  [
                                  {
                                      "key":  "smartDetalhado",
-                                     "reason":  "Contagem SMART fina (setores realocados, horas ligado, temperatura do disco) nao coletada: Get-StorageReliabilityCounter e MSStorageDriver_FailurePredictStatus exigem elevacao - medido, os dois devolvem acesso negado em sessao comum. O VEREDITO de saude que o Windows deriva do SMART e legivel sem privilegio e esta coberto pela sonda DiskHealth; o que falta e a granularidade que permitiria ver um disco comecando a realocar setores ANTES de ele deixar de ser Healthy."
+                                     "reason":  "Contagem de SETORES REALOCADOS nao coletada. O degrau de baixo passou a ser coberto pela sonda SmartDetail desde que a ronda roda com RunLevel HighestAvailable: temperatura, horas ligado, erros de leitura e desgaste respondem. O que continua faltando e a contagem por atributo SMART, que so existe em MSStorageDriver_FailurePredictData - 512 bytes crus, cuja decodificacao varia por fabricante e nao tem tabela publicada a citar. Decodificar sem fonte seria inventar numero, e este projeto nao faz isso. E medido nesta maquina: nem todo disco responde todo campo (um dos tres nao informa horas ligado nem erros de leitura), e a previsao de falha por disco cobre 1 de 3 - as duas coisas saem DECLARADAS pela sonda em vez de somadas."
                                  },
                                  {
                                      "key":  "cpuTemp",
-                                     "reason":  "Temperatura de CPU nao coletada: MSAcpi_ThermalZoneTemperature exige elevacao (medido: acesso negado) e a alternativa e driver de kernel (LibreHardwareMonitor), que ainda nao foi baixado nem testado contra o antivirus. Enquanto isso, throttling de CPU e inferido pela frequencia efetiva."
+                                     "reason":  "Temperatura de NUCLEO de CPU nao coletada, e a elevacao NAO resolveu isso. Medido na maquina real depois de a ronda passar a rodar elevada: MSAcpi_ThermalZoneTemperature responde, com UMA zona a 27,9 C, com a CPU em ~10% de uso. Um nucleo nesse regime estaria entre 35 e 50 C - 27,9 C tem cara de zona ambiente ou de chipset, nao de pacote de CPU. Chamar aquilo de temperatura de CPU seria fabricar leitura, entao a zona pode ser coletada com o nome do que ela e (zona termica ACPI) e a temperatura de nucleo continua LACUNA. Cobri-la exige sensor por nucleo, que so um driver de kernel (LibreHardwareMonitor) entrega, e instalar driver de terceiro em modo kernel num servidor nao se justifica por esta metrica. Enquanto isso, throttling de CPU e inferido pela frequencia efetiva."
                                  }
                              ]
              },

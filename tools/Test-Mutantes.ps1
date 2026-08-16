@@ -258,6 +258,74 @@ $mutantes = @(
        para="if (`$k -in 'v', 'host', 'at', 'mode', 'coverage', 'complete', 'dsk', 'evt') { continue }"
        suite='Test-Drivers.ps1' }
 
+    <#
+        SMART FINO: as tres promessas da sonda nova, cada uma nascida de um
+        detalhe MEDIDO na maquina real e nao suposto.
+
+        BL-S1  ausencia por CAMPO. Um dos tres discos desta maquina responde
+               temperatura e nao responde horas nem erros de leitura - e e o
+               mais quente dos tres. Campo vazio virando zero faz "zero erro de
+               leitura" ser afirmado sobre um disco que nao informou erro
+               nenhum.
+
+        BL-S2  casamento por DeviceId, nao por posicao. Com um disco sem
+               contador, casar por posicao faz todos os seguintes deslizarem, e
+               cada numero passa a descrever o disco errado - continuando a
+               parecer medido.
+
+        BL-S3  cobertura parcial DECLARADA. A previsao de falha responde por 1
+               dos 3 discos aqui. "Nenhum disco preve falha" seria verdade sobre
+               o coberto e silencio sobre os outros dois.
+    #>
+    @{ id='BL-S1'; nome='campo vazio de contador vira NULO';      arq='src\probes\Probe-SmartDetail.ps1'
+       de='if ([string]::IsNullOrWhiteSpace($texto)) { return $null }'
+       para='if ([string]::IsNullOrWhiteSpace($texto)) { return 0.0 }'; suite='Test-Exam.ps1' }
+
+    @{ id='BL-S2'; nome='contador casa por DeviceId, nao posicao'; arq='src\probes\Probe-SmartDetail.ps1'
+       de='$c  = if ($porId.ContainsKey($id)) { $porId[$id] } else { $null }'
+       para='$c  = @($lidosContadores)[$lista.Count]'; suite='Test-Exam.ps1' }
+
+    @{ id='BL-S3'; nome='cobertura parcial de previsao e dita';   arq='src\probes\Probe-SmartDetail.ps1'
+       de='} elseif ($null -ne $cobertos -and $cobertos -lt @($lidosDiscos).Count) {'
+       para='} elseif ($false) {'; suite='Test-Exam.ps1' }
+
+    <#
+        A RONDA E AS SONDAS DELA, que ate agora nao tinham defensor nenhum.
+
+        A decima segunda verificacao mediu o buraco em vez de estima-lo: 'throw'
+        como primeira instrucao executavel de dez arquivos de producao, e as
+        OITO suites continuaram verdes - 871 de 871, codigo 0. 916 linhas em que
+        a mutacao mais detectavel que existe sobrevivia, incluindo o caminho que
+        roda a cada minuto nesta maquina.
+    #>
+    @{ id='BL-W1'; nome='sonda de CPU nao escreve arquivo';       arq='src\probes\Probe-Cpu.ps1'
+       de="param(`r`n    `$Facts,`r`n    [int]`$TimeoutSec = 8`r`n)"
+       para="param(`r`n    `$Facts,`r`n    [int]`$TimeoutSec = 8`r`n)`r`nif (`$null -eq `$Facts) { `$Facts = Get-WMHostFacts }"
+       suite='Test-Patrol.ps1' }
+
+    @{ id='BL-W2'; nome='sonda de memoria nao escreve arquivo';   arq='src\probes\Probe-Memory.ps1'
+       de="param(`r`n    `$Facts,`r`n    [int]`$TimeoutSec = 8`r`n)"
+       para="param(`r`n    `$Facts,`r`n    [int]`$TimeoutSec = 8`r`n)`r`nif (`$null -eq `$Facts) { `$Facts = Get-WMHostFacts }"
+       suite='Test-Patrol.ps1' }
+
+    <#
+        O CONTRATO DA AMOSTRA. 'mode' e o que o armazem usa para separar ronda de
+        exame; trocar o literal faz o dia inteiro de coleta virar amostra de tipo
+        desconhecido, sem erro nenhum no caminho.
+    #>
+    @{ id='BL-W3'; nome='a amostra se declara como ronda';        arq='src\Invoke-Patrol.ps1'
+       de="mode = 'patrol'"; para="mode = 'ronda'"; suite='Test-Patrol.ps1' }
+
+    <#
+        ANEXAR, NUNCA SUBSTITUIR. Uma amostra por minuto durante o dia inteiro:
+        trocar a anexacao por escrita deixa o arquivo com a ULTIMA amostra e
+        descarta as 1439 anteriores - e o arquivo continua existindo, com
+        carimbo recente, parecendo coleta saudavel.
+    #>
+    @{ id='BL-W4'; nome='a amostra e ANEXADA, nao substituida';   arq='src\WinMonitor.psm1'
+       de='[System.IO.File]::AppendAllText($Path, $line + "`r`n", $enc)'
+       para='[System.IO.File]::WriteAllText($Path, $line + "`r`n", $enc)'; suite='Test-Patrol.ps1' }
+
     @{ id='A5';    nome='regra malformada conta como lacuna';     arq='src\WinMonitor.Rules.psm1'
        de='$lacunas = $semFonte.Count + $malformadas.Count + $semDado.Count'
        para='$lacunas = $semFonte.Count + $semDado.Count'; suite='Test-Rules.ps1' }
@@ -371,6 +439,40 @@ $mutantes = @(
     @{ id='BL-99d'; nome='sem contagem nao ha como conferir piso'; arq='tests\Run-All.ps1'
        de='if (-not $mSom.Success) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
 
+    <#
+        SCRIPTBLOCK E TRANSPARENTE, salvo com param() proprio ou invocado com &.
+
+        A versao anterior AFIRMAVA em comentario que ForEach-Object escreve no
+        escopo do bloco, e o modelo foi implementado contra essa frase sem
+        ninguem medi-la. Medido: escreve no escopo de quem chamou. 98
+        scriptblocks, 163 linhas, 26 dos 39 arquivos ficavam cegos.
+    #>
+    @{ id='BL-97i'; nome='scriptblock sem param e transparente';  arq='tools\Find-ParamShadow.ps1'
+       de='if ($null -eq $pb -and -not $ehChamado) { continue }'
+       para='if ($false) { continue }'; suite='Test-Gate.ps1' }
+
+    @{ id='BL-97j'; nome='local: e private: alcancam o parametro'; arq='tools\Find-ParamShadow.ps1'
+       de="} elseif (`$prefixo -ne '' -and `$prefixo -ne 'local' -and `$prefixo -ne 'private') {"
+       para="} elseif (`$prefixo -ne '') {"; suite='Test-Gate.ps1' }
+
+    <#
+        E O CONTRARIO: '& { }' ABRE escopo proprio, e acusa-lo seria o falso
+        positivo que enche o relatorio e faz alguem parar de le-lo. Sem este
+        mutante, "acusar todo scriptblock" passaria nos seis testes acima.
+    #>
+    @{ id='BL-97k'; nome='& { } nao e transparente';              arq='tools\Find-ParamShadow.ps1'
+       de="`$pai.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Ampersand)"
+       para='$false)'; suite='Test-Gate.ps1' }
+
+    <#
+        O PORTAO DISTINGUE ILEGIVEL DE COLISAO. Mapear os dois para a mesma
+        mensagem da vermelho na direcao segura com diagnostico FALSO - e a
+        doutrina deste repositorio e que vermelho com mensagem errada e como
+        alguem aprende a desligar o portao.
+    #>
+    @{ id='BL-101'; nome='ilegivel nao e o mesmo que colisao';    arq='tests\Run-All.ps1'
+       de='if ($psom.ExitCode -eq 2) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
+
     @{ id='BL-97c'; nome='o portao reprova por sombra';           arq='tests\Run-All.ps1'
        de='if ($psom.ExitCode -ne 0) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
 
@@ -431,7 +533,30 @@ $mutantes = @(
 )
 
 if ($Somente) { $mutantes = @($mutantes | Where-Object { $_.id -like "*$Somente*" }) }
-if ($mutantes.Count -eq 0) { Write-Error "nenhum mutante casa '$Somente'"; exit 2 }
+<#
+    ERRO DE USO SAI CRU, e nao por Write-Error - pela mesma razao que o
+    portao ja adotou e que eu apliquei em UM dos dois lugares.
+
+    O formatador quebra a mensagem em 120 colunas contando o caminho do script
+    no cabecalho do ErrorRecord. Medido pela decima segunda verificacao, com a
+    ARVORE LIMPA e nada sabotado, so mudando onde o projeto esta:
+
+        raiz com 20, 60, 72 caracteres  ->  871 testes, exit 0
+        raiz com 76, 90 caracteres      ->  870 testes, exit 1
+
+    A fronteira e raiz >= 73 caracteres, e desta vez NAO ha faixa: medido ate
+    131 e continua reprovando. Test-Gate assertava sobre este texto, e o texto
+    chegava cortado.
+
+    Eu tinha declarado essa classe de defeito fechada no commit anterior. Ela
+    estava fechada em tests\Run-All.ps1 e aberta aqui, quatrocentas linhas
+    abaixo do cenario que a testa - a regra nascendo com o alcance do defeito
+    que a gerou, de novo.
+#>
+if ($mutantes.Count -eq 0) {
+    [Console]::Error.WriteLine("ERRO: nenhum mutante casa '$Somente'")
+    exit 2
+}
 
 $vivos         = New-Object System.Collections.ArrayList
 $naoAplic      = New-Object System.Collections.ArrayList

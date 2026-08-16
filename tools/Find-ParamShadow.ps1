@@ -161,8 +161,27 @@ foreach ($arq in $arquivos) {
         escopo próprio de qualquer jeito: ali nasce variável nova e o parâmetro
         de A fica intacto. Falso positivo.
 
-        O mesmo vale para scriptblock sem param(): '| ForEach-Object { $x = 1 }'
-        escreve no escopo do bloco, não no de quem o chamou.
+        E SCRIPTBLOCK **NÃO** É ESCOPO PRÓPRIO, salvo quando invocado com '&'.
+
+        A versão anterior deste arquivo afirmava, em comentário, que
+        '| ForEach-Object { $x = 1 }' escreve no escopo do bloco. É FALSO, e eu
+        implementei o modelo contra essa frase sem nunca medi-la. A décima
+        segunda verificação mediu, executando, e eu refiz a medição:
+
+            ForEach-Object { $discos = }   MUDOU o de quem chamou
+            Where-Object   { $discos = }   MUDOU
+            @(1).ForEach({ $discos = })    MUDOU
+            . { $discos = }                MUDOU
+            & { $discos = }                ORIGINAL   <- o unico com escopo proprio
+
+        Superfície que isso deixava cega nesta árvore: 98 scriptblocks, 163
+        linhas, em 26 dos 39 arquivos. A única defesa mecânica contra a
+        armadilha que mordeu três vezes chegava com metade do alcance que
+        declarava — e declarava por escrito.
+
+        Agora só é escopo o bloco que tem param() PRÓPRIO (aí ele é lambda, e os
+        parâmetros dele é que valem) ou o invocado com '&'. Todo o resto é
+        transparente: a variável pertence a quem contém o bloco.
     #>
     foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
         # Parâmetros vêm do bloco param() OU da assinatura inline — nunca dos dois.
@@ -178,6 +197,27 @@ foreach ($arq in $arquivos) {
     foreach ($sb in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.ScriptBlockExpressionAst] }, $true)) {
         if (-not $sb.ScriptBlock) { continue }
         $pb = $sb.ScriptBlock.ParamBlock
+
+        <#
+            SÓ É ESCOPO O BLOCO COM param() PRÓPRIO OU INVOCADO COM '&'.
+
+            Bloco com param() é lambda: quem o chama passa argumentos, e os
+            parâmetros dele é que governam ali dentro.
+
+            '& { ... }' abre escopo próprio — medido, é o único dos cinco
+            idiomas testados que abre. Detectado pelo operador de invocação no
+            AST, não por adivinhação.
+
+            Todo o resto — ForEach-Object, Where-Object, .ForEach(), dot-source
+            — é TRANSPARENTE: a atribuição lá dentro apaga a variável de quem
+            contém o bloco, e por isso o bloco não entra como escopo.
+        #>
+        $pai = $sb.Parent
+        $ehChamado = ($pai -is [System.Management.Automation.Language.CommandAst] -and
+                      $pai.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Ampersand)
+
+        if ($null -eq $pb -and -not $ehChamado) { continue }
+
         $ps = if ($pb) { $pb.Parameters } else { @() }
         [void]$escopos.Add(@{
             nome = '<scriptblock>'; ehScript = $false; no = $sb.ScriptBlock
@@ -230,11 +270,18 @@ foreach ($arq in $arquivos) {
         $prefixo = if ($dp -ge 0) { $qualificado.Substring(0, $dp).ToLowerInvariant() } else { '' }
         $simples = if ($dp -ge 0) { $qualificado.Substring($dp + 1) } else { $qualificado }
 
+        <#
+            'local:' e 'private:' escrevem no escopo CORRENTE — medido,
+            executando: os dois apagam a variável de quem está ali. Eles são
+            sinônimos do não qualificado para o efeito que interessa aqui, e a
+            versão anterior os descartava junto com 'global:', que é o único
+            que de fato escreve noutro lugar.
+        #>
         if ($prefixo -eq 'script') {
             # Só alcança parâmetro do script, e só se o escopo do script tiver um.
             $dono = $escopos | Where-Object { $_.ehScript } | Select-Object -First 1
             if ($null -eq $dono) { continue }
-        } elseif ($prefixo -ne '') {
+        } elseif ($prefixo -ne '' -and $prefixo -ne 'local' -and $prefixo -ne 'private') {
             continue
         }
 

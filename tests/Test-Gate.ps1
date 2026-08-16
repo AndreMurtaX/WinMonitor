@@ -661,6 +661,51 @@ try {
     Assert-Equal 0 $r.codigo 'prefixo global: NÃO toca o parâmetro do script, e não é acusado'
 
     <#
+        O IDIOMA MAIS COMUM DO POWERSHELL, e a varredura era cega para ele.
+
+        A versão anterior AFIRMAVA, em comentário, que '| ForEach-Object { $x = 1 }'
+        escreve no escopo do bloco. É falso, e o modelo foi implementado contra
+        essa frase sem ninguém medi-la. Medido, executando:
+
+            ForEach-Object { $discos = }   MUDOU o de quem chamou
+            Where-Object   { $discos = }   MUDOU
+            @(1).ForEach({ $discos = })    MUDOU
+            . { $discos = }                MUDOU
+            $local: / $private:            MUDOU
+            & { $discos = }                ORIGINAL  <- o unico com escopo proprio
+
+        Superfície que isso deixava cega nesta árvore: 98 scriptblocks, 163
+        linhas, 26 dos 39 arquivos. A única defesa mecânica contra a armadilha
+        que mordeu três vezes chegava com metade do alcance que declarava.
+    #>
+    $r = Invoke-Sombra "function A { param(`$Discos); 1 | ForEach-Object { `$discos = 2 } }`r`n"
+    Assert-True ($r.codigo -ne 0) 'ForEach-Object é TRANSPARENTE: a colisão dentro dele é acusada'
+
+    $r = Invoke-Sombra "function A { param(`$Discos); 1 | Where-Object { `$discos = 2; `$true } }`r`n"
+    Assert-True ($r.codigo -ne 0) 'Where-Object também'
+
+    $r = Invoke-Sombra "function A { param(`$Discos); @(1).ForEach({ `$discos = 2 }) }`r`n"
+    Assert-True ($r.codigo -ne 0) 'e o método .ForEach() também'
+
+    $r = Invoke-Sombra "function A { param(`$Discos); . { `$discos = 2 } }`r`n"
+    Assert-True ($r.codigo -ne 0) 'dot-source de scriptblock escreve no escopo de quem chama, e é acusado'
+
+    $r = Invoke-Sombra "function A { param(`$Discos); `$local:discos = 2 }`r`n"
+    Assert-True ($r.codigo -ne 0) 'prefixo local: escreve no escopo corrente, e é acusado'
+
+    $r = Invoke-Sombra "function A { param(`$Discos); `$private:discos = 2 }`r`n"
+    Assert-True ($r.codigo -ne 0) 'prefixo private: também'
+
+    <#
+        E O ÚNICO QUE ABRE ESCOPO PRÓPRIO. Sem esta asserção, a correção acima
+        poderia ter sido "acusar todo scriptblock", que passaria nos seis testes
+        anteriores e encheria o relatório de falso positivo — o outro jeito de a
+        varredura morrer.
+    #>
+    $r = Invoke-Sombra "function A { param(`$Discos); & { `$discos = 2 } }`r`n"
+    Assert-Equal 0 $r.codigo '& { } abre escopo PRÓPRIO: ali nasce variável nova, e não é acusado'
+
+    <#
         FALHA FECHADA. A versão anterior fazia Substring supondo que todo
         arquivo está sob a raiz; com -Caminho fora dela a chamada estourava, a
         exceção sumia no stderr e ela declarava LIMPO, código 0, havendo colisão
@@ -671,6 +716,7 @@ try {
     Assert-Equal 2 $r.codigo 'arquivo que não dá para analisar é VERMELHO, não silêncio'
     Assert-True ($r.texto -match 'ILEGIVEL') 'e ele é nomeado como ilegível'
     Assert-True ($r.texto -match 'nao olhar nao e nao ter nada') 'com o motivo dito por extenso'
+
 
     <#
         A CONTAGEM DE ARQUIVOS SAI NOS DOIS DESFECHOS, porque é ela que o portão
@@ -819,6 +865,18 @@ try {
     $r = Invoke-PortaoDeProjeto -ComSombra @(@{ arquivo = 'tools\Find-ParamShadow.ps1'
                                                 de = "`$resumo = `"(`$(`$arquivos.Count) arquivo(s) varrido(s))`""
                                                 para = "`$resumo = 'varredura concluida'" })
+    <#
+        E O PORTÃO DISTINGUE OS DOIS DESFECHOS. Ele mapeava qualquer código ≠ 0
+        para "há variável colidindo" — vermelho na direção segura com
+        diagnóstico factualmente FALSO, jogando fora a distinção que a própria
+        varredura tinha acabado de criar.
+    #>
+    $rIleg = Invoke-PortaoDeProjeto -ComSombra @(@{ arquivo = 'src\WinMonitor.psm1'
+                                                    de = '#requires -Version 5.1'
+                                                    para = "#requires -Version 5.1`r`nfunction {{{" })
+    Assert-True (-not $rIleg.aprovou) 'projeto com script insintático NÃO passa no portão'
+    Assert-True ($rIleg.text -match 'NÃO conseguiu analisar|NAO conseguiu analisar') 'e o motivo diz que ela não conseguiu ANALISAR'
+    Assert-True (-not ($rIleg.text -match 'colidindo com parametro')) 'sem afirmar colisão que ela não encontrou'
     Assert-True (-not $r.aprovou) 'varredura que não declara quantos arquivos leu NÃO passa'
     Assert-True ($r.text -match 'não declarou quantos arquivos') 'e o motivo nomeia isso'
 
