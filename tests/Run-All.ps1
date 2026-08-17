@@ -163,7 +163,7 @@ $suites = @(
     @{ file = 'Test-LaudoDriver.ps1'; min = 37  }
     @{ file = 'Test-Report.ps1';      min = 93  }
     @{ file = 'Test-Exam.ps1';        min = 129 }
-    @{ file = 'Test-Gate.ps1';        min = 127 }
+    @{ file = 'Test-Gate.ps1';        min = 135 }
     @{ file = 'Test-Drivers.ps1';     min = 80  }
     @{ file = 'Test-Patrol.ps1';      min = 52  }
 )

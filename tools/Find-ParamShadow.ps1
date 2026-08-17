@@ -212,11 +212,54 @@ foreach ($arq in $arquivos) {
             — é TRANSPARENTE: a atribuição lá dentro apaga a variável de quem
             contém o bloco, e por isso o bloco não entra como escopo.
         #>
-        $pai = $sb.Parent
-        $ehChamado = ($pai -is [System.Management.Automation.Language.CommandAst] -and
-                      $pai.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Ampersand)
+        <#
+            A TRANSPARÊNCIA É DO CMDLET QUE RECEBE O BLOCO, NÃO DO BLOCO.
 
-        if ($null -eq $pb -and -not $ehChamado) { continue }
+            Terceira volta neste modelo, e as duas anteriores erraram por
+            generalizar de poucos casos. A décima terceira verificação mediu 27
+            idiomas executando, e o resultado não segue "tem param() ou não":
+
+              TRANSPARENTES (a atribuição apaga a variável de quem chamou)
+                ForEach-Object { }        Where-Object { }
+                @(x).ForEach({ })         @(x).Where({ })
+                . { }                     — e TAMBÉM com param() próprio
+
+              ESCOPO PRÓPRIO (a variável de quem chamou sobrevive)
+                & { }        & $sb        { }.Invoke()
+                Sort-Object { }           Group-Object { }
+                Select-Object @{e={ }}    Invoke-Command -ScriptBlock { }
+
+            Eu tratava bloco com param() como escopo próprio SEMPRE — daí quatro
+            falsos negativos — e bloco sem param() como transparente sempre —
+            daí seis falsos positivos, entre eles '& $sb', que é idioma
+            corriqueiro. Nenhum quebrava código vivo hoje; o que estava errado
+            era a regra, e é dela que a próxima edição dependeria.
+
+            A LISTA É UMA LISTA, e está dito em vez de derivado: não há como
+            deduzir estaticamente o escopo de um cmdlet arbitrário que receba
+            scriptblock. Fora dos nomes abaixo, o padrão é ESCOPO PRÓPRIO —
+            errar para o lado de não acusar, porque falso positivo é o que faz
+            alguém desligar a varredura.
+        #>
+        $TRANSPARENTES = @('foreach-object', 'where-object', '%', '?', 'foreach', 'where')
+
+        $pai = $sb.Parent
+        $ehTransparente = $false
+
+        if ($pai -is [System.Management.Automation.Language.CommandAst]) {
+            if ($pai.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Dot) {
+                # dot-source: '. { ... }' escreve no escopo de quem chama.
+                $ehTransparente = $true
+            } else {
+                $nomeCmd = [string]$pai.GetCommandName()
+                if ($nomeCmd -and ($TRANSPARENTES -contains $nomeCmd.ToLowerInvariant())) { $ehTransparente = $true }
+            }
+        } elseif ($pai -is [System.Management.Automation.Language.InvokeMemberExpressionAst]) {
+            $metodo = [string]$pai.Member.Value
+            if ($metodo -and ($metodo -ieq 'ForEach' -or $metodo -ieq 'Where')) { $ehTransparente = $true }
+        }
+
+        if ($ehTransparente) { continue }
 
         $ps = if ($pb) { $pb.Parameters } else { @() }
         [void]$escopos.Add(@{

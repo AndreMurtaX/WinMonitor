@@ -706,6 +706,48 @@ try {
     Assert-Equal 0 $r.codigo '& { } abre escopo PRÓPRIO: ali nasce variável nova, e não é acusado'
 
     <#
+        A TRANSPARÊNCIA É DO CMDLET, NÃO DO BLOCO — e este é o eixo que as duas
+        voltas anteriores erraram.
+
+        Eu tratava bloco COM param() como escopo próprio sempre, e bloco SEM
+        param() como transparente sempre. A décima terceira verificação mediu 27
+        idiomas executando e mostrou que nenhum dos dois eixos é o certo: quem
+        decide é o cmdlet que recebe o bloco.
+
+        Quatro falsos negativos vinham do primeiro eixo, seis falsos positivos do
+        segundo — entre eles '& $sb', que é idioma corriqueiro. Nenhum quebrava
+        código vivo; o que estava errado era a regra.
+    #>
+    $r = Invoke-Sombra "function A { param(`$Discos); 1 | ForEach-Object { param(`$y) `$discos = 2 } }`r`n"
+    Assert-True ($r.codigo -ne 0) 'bloco COM param() dentro de ForEach-Object continua transparente'
+
+    $r = Invoke-Sombra "function A { param(`$Discos); . { param(`$y) `$discos = 2 } }`r`n"
+    Assert-True ($r.codigo -ne 0) 'e dot-source com param() também'
+
+    $r = Invoke-Sombra "function A { param(`$Discos); 1 | % { `$discos = 2 } }`r`n"
+    Assert-True ($r.codigo -ne 0) 'o alias % é o mesmo cmdlet, e é reconhecido como tal'
+
+    <#
+        E OS SEIS QUE ABREM ESCOPO PRÓPRIO. Cada um era acusação falsa, e falso
+        positivo é o que faz alguém desligar a varredura — o modo de morte que
+        não deixa vestígio no portão.
+    #>
+    $r = Invoke-Sombra "function A { param(`$Discos); 1,2 | Sort-Object { `$discos = 2; `$_ } }`r`n"
+    Assert-Equal 0 $r.codigo 'Sort-Object roda o bloco em escopo próprio: não é acusado'
+
+    $r = Invoke-Sombra "function A { param(`$Discos); 1,2 | Group-Object { `$discos = 2; `$_ } }`r`n"
+    Assert-Equal 0 $r.codigo 'Group-Object idem'
+
+    $r = Invoke-Sombra "function A { param(`$Discos); Invoke-Command -ScriptBlock { `$discos = 2 } }`r`n"
+    Assert-Equal 0 $r.codigo 'Invoke-Command idem'
+
+    $r = Invoke-Sombra "function A { param(`$Discos); `$sb = { `$discos = 2 }; & `$sb }`r`n"
+    Assert-Equal 0 $r.codigo '& `$sb — bloco guardado em variável — idem, e é idioma corriqueiro'
+
+    $r = Invoke-Sombra "function A { param(`$Discos); { `$discos = 2 }.Invoke() }`r`n"
+    Assert-Equal 0 $r.codigo 'e .Invoke() idem'
+
+    <#
         FALHA FECHADA. A versão anterior fazia Substring supondo que todo
         arquivo está sob a raiz; com -Caminho fora dela a chamada estourava, a
         exceção sumia no stderr e ela declarava LIMPO, código 0, havendo colisão

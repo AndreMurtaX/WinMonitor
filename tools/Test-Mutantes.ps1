@@ -530,29 +530,26 @@ $mutantes = @(
        de='if (-not $mSom.Success) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
 
     <#
-        SCRIPTBLOCK E TRANSPARENTE, salvo com param() proprio ou invocado com &.
+        BL-97i E BL-97k VIVERAM AQUI, e sairam quando o modelo trocou de EIXO.
 
-        A versao anterior AFIRMAVA em comentario que ForEach-Object escreve no
-        escopo do bloco, e o modelo foi implementado contra essa frase sem
-        ninguem medi-la. Medido: escreve no escopo de quem chamou. 98
-        scriptblocks, 163 linhas, 26 dos 39 arquivos ficavam cegos.
+        Eles defendiam "scriptblock sem param() e transparente" e "& { } nao e
+        transparente" - as duas metades do eixo errado. A 13a verificacao mediu
+        27 idiomas executando: quem decide a transparencia e o CMDLET que recebe
+        o bloco, nao o bloco. Bloco COM param() dentro de ForEach-Object continua
+        transparente, e Sort-Object abre escopo proprio com ou sem param().
+
+        As duas promessas continuam defendidas, com o eixo certo, por BL-97l (a
+        lista de cmdlets transparentes) e BL-97m (o padrao fora dela).
+
+        E a bateria acusou os dois como ANCORA OBSOLETA em vez de conta-los como
+        mortos, reprovando o portao - o comportamento que a 9a rodada pediu,
+        funcionando em campo pela terceira vez.
     #>
-    @{ id='BL-97i'; nome='scriptblock sem param e transparente';  arq='tools\Find-ParamShadow.ps1'
-       de='if ($null -eq $pb -and -not $ehChamado) { continue }'
-       para='if ($false) { continue }'; suite='Test-Gate.ps1' }
 
     @{ id='BL-97j'; nome='local: e private: alcancam o parametro'; arq='tools\Find-ParamShadow.ps1'
        de="} elseif (`$prefixo -ne '' -and `$prefixo -ne 'local' -and `$prefixo -ne 'private') {"
        para="} elseif (`$prefixo -ne '') {"; suite='Test-Gate.ps1' }
 
-    <#
-        E O CONTRARIO: '& { }' ABRE escopo proprio, e acusa-lo seria o falso
-        positivo que enche o relatorio e faz alguem parar de le-lo. Sem este
-        mutante, "acusar todo scriptblock" passaria nos seis testes acima.
-    #>
-    @{ id='BL-97k'; nome='& { } nao e transparente';              arq='tools\Find-ParamShadow.ps1'
-       de="`$pai.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Ampersand)"
-       para='$false)'; suite='Test-Gate.ps1' }
 
     <#
         O PORTAO DISTINGUE ILEGIVEL DE COLISAO. Mapear os dois para a mesma
@@ -563,6 +560,22 @@ $mutantes = @(
     @{ id='BL-101'; nome='ilegivel nao e o mesmo que colisao';    arq='tests\Run-All.ps1'
        de='if ($psom.ExitCode -eq 2) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
 
+    <#
+        B-13.8: a transparencia e do CMDLET, nao do bloco. Terceira volta neste
+        modelo; as duas anteriores erraram de EIXO, nao de detalhe.
+
+        BL-97l tira ForEach-Object/Where-Object da lista: os quatro falsos
+        negativos voltam.
+        BL-97m torna tudo transparente: os seis falsos positivos voltam, entre
+        eles '& $sb', que e idioma corriqueiro - e falso positivo e o modo de
+        morte que nao deixa vestigio no portao.
+    #>
+    @{ id='BL-97l'; nome='a lista de cmdlets transparentes vale'; arq='tools\Find-ParamShadow.ps1'
+       de="`$TRANSPARENTES = @('foreach-object', 'where-object', '%', '?', 'foreach', 'where')"
+       para="`$TRANSPARENTES = @()"; suite='Test-Gate.ps1' }
+
+    @{ id='BL-97m'; nome='fora da lista, o escopo e PROPRIO';    arq='tools\Find-ParamShadow.ps1'
+       de='if ($ehTransparente) { continue }'; para='continue'; suite='Test-Gate.ps1' }
     @{ id='BL-97c'; nome='o portao reprova por sombra';           arq='tests\Run-All.ps1'
        de='if ($psom.ExitCode -ne 0) {'; para='if ($false) {'; suite='Test-Gate.ps1' }
 
