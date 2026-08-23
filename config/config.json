@@ -103,7 +103,8 @@
                                 ],
                    "channels":  [
                                     "File",
-                                    "Toast"
+                                    "Toast",
+                                    "Telegram"
                                 ],
                    "heartbeatDays":  7,
                    "repeatDays":  1,

@@ -31,6 +31,76 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'TestKit.ps1')
 
+<#
+    LER SAIDA DE PROCESSO FILHO SEM ADIVINHAR A CODIFICACAO.
+
+    Este projeto ja errou nos DOIS sentidos, e a segunda vez foi por a primeira
+    medicao ter envelhecido:
+
+      1. A versao original lia com -Encoding UTF8. Medido byte a byte: o filho
+         escrevia CP850, e a leitura UTF8 DESTRUIA o acento. Trocado para OEM,
+         com a medicao escrita no comentario.
+
+      2. Depois a pagina de codigo do console desta maquina passou a ser 65001
+         (UTF-8). O filho passou a escrever UTF-8, a leitura OEM passou a
+         destruir o acento, e SETE assercoes do Test-Gate ficaram vermelhas -
+         todas as que casavam palavra acentuada, e nenhuma das que nao casavam.
+
+    Nas duas vezes o codigo estava correto para a maquina onde foi medido e
+    errado para a maquina do lado. O verde dependia de 'chcp', que e ambiente,
+    e nao de codigo.
+
+    Agora nao se escolhe: leem-se os BYTES e tenta-se UTF-8 ESTRITO. Conteudo
+    que nao e UTF-8 lanca - em vez de virar U+FFFD em silencio - e ai e lido na
+    pagina OEM. E o mesmo desenho de tools\Repair-Encoding.ps1, pelo mesmo
+    motivo. A duplicacao deste bloco entre os arquivos e deliberada: o portao
+    nao depende de src\, para poder julgar src\.
+
+    O QUE ISTO NAO RESOLVE, dito em vez de negado: uma sequencia CP850 que por
+    acaso seja UTF-8 valido seria lida como UTF-8. Para texto latino com uma ou
+    duas letras acentuadas isso e improvavel, e nao ha como distinguir sem
+    perguntar ao filho qual codificacao ele usou - coisa que a API nao oferece.
+#>
+function Read-WMSaidaFilho {
+    param([string]$Caminho)
+    if (-not (Test-Path -LiteralPath $Caminho)) { return '' }
+    <#
+        FileShare.ReadWrite, e NAO ReadAllBytes.
+
+        [IO.File]::ReadAllBytes abre sem compartilhamento e estoura se outro
+        processo ainda segura o arquivo. Medido pelo mutante BL-92: com ele, o
+        portao filho nao espera a bateria terminar, o processo dela continua com
+        o handle de redirecao aberto, e a leitura estourava - derrubando a suite
+        sem resumo, o que a bateria classifica como INCONCLUSIVO.
+
+        Get-Content, que estava aqui antes, lia COMPARTILHADO. A troca por
+        ReadAllBytes consertou a codificacao e trouxe esta fragilidade junto. Foi
+        a propria bateria que a encontrou, no mutante seguinte.
+
+        Falha de leitura devolve vazio em vez de lancar, como o
+        '-ErrorAction SilentlyContinue' que havia antes: um auxiliar de leitura
+        que derruba quem o chama transforma diagnostico em morte.
+    #>
+    $bytes = $null
+    try {
+        $fs = New-Object System.IO.FileStream($Caminho, [System.IO.FileMode]::Open,
+                                              [System.IO.FileAccess]::Read,
+                                              [System.IO.FileShare]::ReadWrite)
+        try {
+            $bytes = New-Object byte[] $fs.Length
+            [void]$fs.Read($bytes, 0, $bytes.Length)
+        } finally { $fs.Dispose() }
+    } catch { return '' }
+    if ($null -eq $bytes -or $bytes.Length -eq 0) { return '' }
+    try {
+        $estrito = New-Object System.Text.UTF8Encoding($false, $true)
+        return $estrito.GetString($bytes)
+    } catch {
+        $oem = [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
+        return $oem.GetString($bytes)
+    }
+}
+
 $portao = Join-Path $PSScriptRoot 'Run-All.ps1'
 $tmp    = Join-Path ([System.IO.Path]::GetTempPath()) ('wm-gate-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $enc    = New-Object System.Text.UTF8Encoding($true)
@@ -92,8 +162,8 @@ function Invoke-PortaoArgs {
     $null = $p.Handle
     $fim = $p.WaitForExit(300000)
     $cod = if ($fim) { $p.ExitCode } else { try { $p.Kill() } catch { }; -1 }
-    $t = [string](Get-Content -LiteralPath $o -Raw -Encoding OEM -ErrorAction SilentlyContinue) + "`n" +
-         [string](Get-Content -LiteralPath ($o + '.err') -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+    $t = [string](Read-WMSaidaFilho $o) + "`n" +
+         [string](Read-WMSaidaFilho ($o + '.err'))
     Remove-Item -LiteralPath $o, ($o + '.err') -Force -ErrorAction SilentlyContinue
     [pscustomobject]@{ text = $t; codigo = $cod; aprovou = ($t -match 'TODAS AS SUITES PASSARAM') }
 }
@@ -279,8 +349,8 @@ try {
                      -RedirectStandardOutput $out -RedirectStandardError ($out + '.err')
             $null = $p.Handle
             [void]$p.WaitForExit(120000)
-            (Get-Content -LiteralPath $out -Raw -Encoding OEM -ErrorAction SilentlyContinue) + "`n" +
-            (Get-Content -LiteralPath ($out + '.err') -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+            (Read-WMSaidaFilho $out) + "`n" +
+            (Read-WMSaidaFilho ($out + '.err'))
         } finally {
             Remove-Item -LiteralPath $out, ($out + '.err') -Force -ErrorAction SilentlyContinue
         }
@@ -301,8 +371,8 @@ try {
               -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $fakeVac `
               -RedirectStandardOutput $outV -RedirectStandardError ($outV + '.err')
     $null = $pv.Handle; [void]$pv.WaitForExit(30000)
-    $txtV = (Get-Content -LiteralPath $outV -Raw -Encoding OEM -ErrorAction SilentlyContinue) + "`n" +
-            (Get-Content -LiteralPath ($outV + '.err') -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+    $txtV = (Read-WMSaidaFilho $outV) + "`n" +
+            (Read-WMSaidaFilho ($outV + '.err'))
     Remove-Item -LiteralPath $outV, ($outV + '.err') -Force -ErrorAction SilentlyContinue
 
     Assert-True ($txtV -match 'TODAS AS SUITES PASSARAM') 'o stdout sobrevive ao stderr: a captura não é vácuo'
@@ -354,6 +424,73 @@ try {
     Assert-True (-not ($t -match 'TODAS AS SUITES PASSARAM')) 'spec com caminho é recusada'
     Assert-True ($t -match 'caminho') 'e a trava que pegou foi a de caminho, não a de arquivo ausente'
     Assert-True (-not ($t -match 'executei de fora')) 'o arquivo de fora NÃO chegou a ser executado'
+
+    # =====================================================================
+    Start-TestGroup 'A leitura de saída DETECTA a codificação, não a escolhe  [MUTAÇÃO]'
+
+    <#
+        ESTE GRUPO NASCEU DE UMA MEDIÇÃO QUE ENVELHECEU.
+
+        A leitura de saída de processo filho usava -Encoding OEM, e a escolha
+        estava MEDIDA byte a byte no comentário — com o console em cp850, onde
+        ela era correta e a alternativa UTF8 destruía o acento.
+
+        Meses depois a página de código desta máquina passou a ser 65001. O
+        filho passou a escrever UTF-8, a leitura OEM passou a destruir o acento,
+        e sete asserções do Test-Gate ficaram vermelhas: todas as que casavam
+        palavra acentuada, nenhuma das que não casavam.
+
+        O código estava certo para a máquina onde foi medido e errado para a do
+        lado. O verde dependia de 'chcp' — ambiente, não código.
+
+        E os dois ramos são exercitados aqui com BYTES SINTÉTICOS, de propósito:
+        numa máquina com console UTF-8 o ramo de cp850 nunca executaria, e uma
+        trava que não roda é uma trava que ninguém sabe se funciona.
+    #>
+    $acentos = 'a ronda está ilegível: coleta não confiável'
+
+    $arqUtf8 = Join-Path $tmp 'saida-utf8.txt'
+    [System.IO.File]::WriteAllBytes($arqUtf8, ([System.Text.Encoding]::UTF8).GetBytes($acentos))
+    Assert-Equal $acentos (Read-WMSaidaFilho $arqUtf8) 'filho que escreve UTF-8 é lido como UTF-8'
+
+    $arq850 = Join-Path $tmp 'saida-850.txt'
+    [System.IO.File]::WriteAllBytes($arq850, ([System.Text.Encoding]::GetEncoding(850)).GetBytes($acentos))
+    Assert-Equal $acentos (Read-WMSaidaFilho $arq850) 'e filho que escreve cp850 é lido como cp850 — o mesmo texto sai dos dois'
+
+    <#
+        O CONTRÁRIO É O QUE ESTAVA ACONTECENDO, e vale medir para a asserção
+        acima não passar por acaso: os bytes das duas codificações são
+        DIFERENTES, então ler um com a régua do outro produz texto diferente.
+    #>
+    Assert-True (([System.IO.File]::ReadAllBytes($arqUtf8)).Length -ne ([System.IO.File]::ReadAllBytes($arq850)).Length) `
+        'os dois arquivos têm bytes diferentes: a detecção está fazendo trabalho real'
+
+    <#
+        E O ARQUIVO QUE OUTRO PROCESSO AINDA SEGURA.
+
+        Get-Content lia COMPARTILHADO; [IO.File]::ReadAllBytes nao. A troca
+        consertou a codificacao e trouxe essa fragilidade junto - e foi o
+        mutante BL-92 que a encontrou: com ele o portao nao espera a bateria
+        terminar, o processo dela continua com o handle de redirecao aberto, e a
+        leitura estourava, derrubando a suite sem resumo.
+
+        Nao e caso de laboratorio: e exatamente o que acontece quando o portao
+        mata um filho por prazo e le a saida dele em seguida.
+    #>
+    $arqPreso = Join-Path $tmp 'saida-presa.txt'
+    [System.IO.File]::WriteAllBytes($arqPreso, ([System.Text.Encoding]::UTF8).GetBytes($acentos))
+    $segurador = New-Object System.IO.FileStream($arqPreso, [System.IO.FileMode]::Open,
+                                                 [System.IO.FileAccess]::ReadWrite,
+                                                 [System.IO.FileShare]::ReadWrite)
+    try {
+        Assert-Equal $acentos (Read-WMSaidaFilho $arqPreso) 'le arquivo que outro processo ainda segura ABERTO PARA ESCRITA'
+    } finally { $segurador.Dispose() }
+
+    Assert-Equal '' (Read-WMSaidaFilho (Join-Path $tmp 'nao-existe-nenhum.txt')) 'arquivo ausente devolve vazio, não explode'
+
+    $arqVazio = Join-Path $tmp 'saida-vazia.txt'
+    [System.IO.File]::WriteAllBytes($arqVazio, @())
+    Assert-Equal '' (Read-WMSaidaFilho $arqVazio) 'arquivo vazio também'
 
     # =====================================================================
     Start-TestGroup 'Portão: o diagnóstico acentuado chega inteiro  [MUTAÇÃO]'
@@ -421,9 +558,30 @@ try {
             bateria sintética de um mutante esbarraria nele por um motivo que não
             é o que estes cenários medem. O piso tem cenário próprio, abaixo.
         #>
-        $txt = & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $portao `
-                   -SuiteDir $d -SuiteSpec 'Test-A.ps1:3' -BateriaPath $fake `
-                   -BateriaTimeoutSec $PrazoBateria -MutantesMin $Piso -SemSombra -Quiet 2>&1 | Out-String
+        <#
+            PROCESSO PROPRIO COM SAIDA EM ARQUIVO, e nao '2>&1 | Out-String'.
+
+            Sob $ErrorActionPreference='Stop', stderr de comando nativo vira
+            ErrorRecord e DERRUBA esta suite - que morre sem resumo, e a bateria
+            classifica como INCONCLUSIVO. Foi o que aconteceu com o BL-92: a
+            mutacao faz o portao filho estourar ao ler ExitCode de processo que
+            nao terminou, o estouro vai para stderr, e o Test-Gate morria junto
+            em vez de acusar.
+
+            E a MESMA armadilha que ja pos sete assercoes no vacuo neste arquivo,
+            sobrevivendo num auxiliar que ninguem tinha revisitado. Agora os tres
+            invocadores leem de arquivo.
+        #>
+        $o = [System.IO.Path]::GetTempFileName()
+        $pr = Start-Process -FilePath $psExe -PassThru -NoNewWindow -Wait:$false `
+                  -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $portao, `
+                                '-SuiteDir', $d, '-SuiteSpec', 'Test-A.ps1:3', '-BateriaPath', $fake, `
+                                '-BateriaTimeoutSec', $PrazoBateria, '-MutantesMin', $Piso, '-SemSombra', '-Quiet' `
+                  -RedirectStandardOutput $o -RedirectStandardError ($o + '.err')
+        $null = $pr.Handle
+        if (-not $pr.WaitForExit(300000)) { try { $pr.Kill() } catch { } }
+        $txt = (Read-WMSaidaFilho $o) + "`n" + (Read-WMSaidaFilho ($o + '.err'))
+        Remove-Item -LiteralPath $o, ($o + '.err') -Force -ErrorAction SilentlyContinue
         [pscustomobject]@{ text = $txt; aprovou = ($txt -match 'TODAS AS SUITES PASSARAM') }
     }
 
@@ -583,7 +741,7 @@ try {
     $null = $pi.Handle
     $terminou = $pi.WaitForExit(180000)
     $codI = if ($terminou) { $pi.ExitCode } else { try { $pi.Kill() } catch { }; -1 }
-    $txtI = (Get-Content -LiteralPath $outI -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+    $txtI = (Read-WMSaidaFilho $outI)
     Remove-Item -LiteralPath $outI, ($outI + '.err') -Force -ErrorAction SilentlyContinue
 
     Assert-True ($txtI -match 'INCONCLUSIVO') 'suíte que não roda é INCONCLUSIVO, não morte — conferido executando'
@@ -622,7 +780,7 @@ try {
         $null = $p.Handle
         $fim = $p.WaitForExit(60000)
         $cod = if ($fim) { $p.ExitCode } else { try { $p.Kill() } catch { }; -1 }
-        $t = (Get-Content -LiteralPath $o -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+        $t = (Read-WMSaidaFilho $o)
         Remove-Item -LiteralPath $o, ($o + '.err') -Force -ErrorAction SilentlyContinue
         [pscustomobject]@{ texto = [string]$t; codigo = $cod }
     }
@@ -823,7 +981,7 @@ try {
     $null = $pSom.Handle
     $fimSom = $pSom.WaitForExit(180000)
     if (-not $fimSom) { try { $pSom.Kill() } catch { } }
-    $tSom = (Get-Content -LiteralPath $oSom -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+    $tSom = (Read-WMSaidaFilho $oSom)
     Remove-Item -LiteralPath $oSom, ($oSom + '.err') -Force -ErrorAction SilentlyContinue
 
     Assert-True (-not ($tSom -match 'TODAS AS SUITES PASSARAM')) 'projeto com sombra de parâmetro NÃO passa no portão'
@@ -870,7 +1028,7 @@ try {
                  -RedirectStandardOutput $o -RedirectStandardError ($o + '.err')
         $null = $p.Handle
         if (-not $p.WaitForExit(180000)) { try { $p.Kill() } catch { } }
-        $t = [string](Get-Content -LiteralPath $o -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+        $t = [string](Read-WMSaidaFilho $o)
         Remove-Item -LiteralPath $o, ($o + '.err') -Force -ErrorAction SilentlyContinue
         [pscustomobject]@{ text = $t; aprovou = ($t -match 'TODAS AS SUITES PASSARAM') }
     }
@@ -969,7 +1127,7 @@ try {
                 -RedirectStandardOutput $oQbr -RedirectStandardError ($oQbr + '.err')
     $null = $pQbr.Handle
     if (-not $pQbr.WaitForExit(180000)) { try { $pQbr.Kill() } catch { } }
-    $tQbr = (Get-Content -LiteralPath $oQbr -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+    $tQbr = (Read-WMSaidaFilho $oQbr)
     Remove-Item -LiteralPath $oQbr, ($oQbr + '.err') -Force -ErrorAction SilentlyContinue
 
     Assert-True (-not ($tQbr -match 'TODAS AS SUITES PASSARAM')) 'projeto com script em LF NÃO passa no portão'
@@ -1030,7 +1188,7 @@ try {
     $null = $pViv.Handle
     $fimViv = $pViv.WaitForExit(300000)
     $codViv = if ($fimViv) { $pViv.ExitCode } else { try { $pViv.Kill() } catch { }; -1 }
-    $tViv = [string](Get-Content -LiteralPath $oViv -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+    $tViv = [string](Read-WMSaidaFilho $oViv)
     Remove-Item -LiteralPath $oViv, ($oViv + '.err') -Force -ErrorAction SilentlyContinue
 
     Assert-True ($tViv -match 'VIVO') 'mutação que não muda nada é declarada VIVA — conferido executando'
@@ -1081,8 +1239,8 @@ try {
                 -RedirectStandardOutput $oLng -RedirectStandardError ($oLng + '.err')
     $null = $pLng.Handle
     if (-not $pLng.WaitForExit(180000)) { try { $pLng.Kill() } catch { } }
-    $tLng = [string](Get-Content -LiteralPath $oLng -Raw -Encoding OEM -ErrorAction SilentlyContinue) + "`n" +
-            [string](Get-Content -LiteralPath ($oLng + '.err') -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+    $tLng = [string](Read-WMSaidaFilho $oLng) + "`n" +
+            [string](Read-WMSaidaFilho ($oLng + '.err'))
     Remove-Item -LiteralPath $oLng, ($oLng + '.err') -Force -ErrorAction SilentlyContinue
 
     <#
@@ -1114,8 +1272,8 @@ try {
                 -RedirectStandardOutput $oBat -RedirectStandardError ($oBat + '.err')
     $null = $pBat.Handle
     if (-not $pBat.WaitForExit(120000)) { try { $pBat.Kill() } catch { } }
-    $tBat = [string](Get-Content -LiteralPath $oBat -Raw -Encoding OEM -ErrorAction SilentlyContinue) + "`n" +
-            [string](Get-Content -LiteralPath ($oBat + '.err') -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+    $tBat = [string](Read-WMSaidaFilho $oBat) + "`n" +
+            [string](Read-WMSaidaFilho ($oBat + '.err'))
     Remove-Item -LiteralPath $oBat, ($oBat + '.err') -Force -ErrorAction SilentlyContinue
 
     Assert-True ($tBat -match 'nenhum mutante casa') 'a mensagem da BATERIA também chega inteira de um caminho longo'

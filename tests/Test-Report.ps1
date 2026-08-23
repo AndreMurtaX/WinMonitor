@@ -601,6 +601,142 @@ try {
     $saida2 = & (Join-Path $proj 'src\Invoke-Report.ps1') -Day $dia | Out-String
     Assert-True ($saida2 -match 'Sem novidade') 'a segunda chamada no mesmo dia não repete'
 
+    # =====================================================================
+    Start-TestGroup 'Canal Telegram: o único que alcança quem não está na máquina  [MUTAÇÃO]'
+
+    <#
+        POR QUE ELE EXISTE, e por que quase todo teste aqui é sobre FALHA.
+
+        Os outros dois canais falham exatamente quando mais precisam funcionar:
+        Notify-File escreve num disco que pode ser o que está morrendo, e
+        Notify-Toast aparece na sessão interativa — que a ronda deixou de ter
+        quando passou para S4U. Se o disco começar a falhar às três da manhã, o
+        canal que sobra é um arquivo no disco que está falhando.
+
+        A costura -Transporte troca a chamada de rede por um scriptblock: a
+        suíte exercita composição e tratamento de erro SEM internet e SEM bot.
+        Teste que precisasse de rede não roda no portão, e canal que não roda no
+        portão é canal que ninguém sabe se funciona.
+    #>
+    $tg = Join-Path $root 'src\notifiers\Notify-Telegram.ps1'
+    Assert-True (Test-Path $tg) 'o canal Telegram existe'
+
+    $relTg = [pscustomobject]@{
+        host = 'MAQUINA-X'; window = '2026-08-16'; verdict = 'parar'
+        findings = @([pscustomobject]@{ severity = 'parar'; claim = 'O Windows registrou erro de hardware (WHEA)' })
+        health = [pscustomobject]@{ ok = $true }
+        coverage = [pscustomobject]@{ complete = $true }
+        notifyReason = 'achado novo'
+    }
+    $cfgTg = New-Data '{}'
+
+    $bomCfg = Join-Path $tmp 'tg-ok.json'
+    [System.IO.File]::WriteAllText($bomCfg, '{"token":"123:ABC","chatId":"999"}', (New-Object System.Text.UTF8Encoding($false)))
+
+    <#
+        CLOSURE EXPLÍCITA, e não $script:.
+
+        O scriptblock é definido AQUI e executado LÁ DENTRO, pelo canal. Uma
+        atribuição a $script: dentro dele não volta para esta suíte — medido: a
+        URL e o chat_id chegavam vazios e a asserção seguinte estourava em nulo.
+
+        GetNewClosure() prende o $capturado no momento da criação, e a escrita
+        cai no objeto certo. É a mesma família de escopo que a varredura de
+        sombra passou três voltas modelando.
+    #>
+    $capturado = @{ url = $null; body = $null }
+    $entrega = { param($u, $b) $capturado.url = $u; $capturado.body = $b; [pscustomobject]@{ ok = $true } }.GetNewClosure()
+
+    $r = & $tg -Text 'ignorado' -Report $relTg -Config $cfgTg -CaminhoConfig $bomCfg -Transporte $entrega
+    Assert-True $r.ok 'com token e chatId, o envio é declarado bem-sucedido'
+    Assert-True ($capturado.url -match 'api\.telegram\.org/bot123:ABC/sendMessage') 'a URL leva o token do bot'
+    Assert-Equal '999' $capturado.body.chat_id 'e o destino é o chat configurado'
+
+    <#
+        TEXTO PURO, SEM parse_mode. Nome de disco vem do fabricante e pode conter
+        '*', '_' e '[': com Markdown ligado o Telegram RECUSA a mensagem inteira,
+        e o aviso some sem erro nenhum do nosso lado. É a mesma lição do escape
+        de XML no canal local — o pior canal de aviso é o que falha em silêncio.
+    #>
+    Assert-True (-not $capturado.body.ContainsKey('parse_mode')) 'a mensagem vai como texto puro: nome de peça não vira sintaxe'
+
+    Assert-True ($capturado.body.text -match 'MAQUINA-X') 'a mensagem diz de qual máquina fala'
+    Assert-True ($capturado.body.text -match 'PARAR') 'e o veredito vem em destaque'
+    Assert-True ($capturado.body.text -match 'WHEA') 'com o achado que motivou o aviso'
+    Assert-True ($capturado.body.text -match 'achado novo') 'e o motivo pelo qual ele está sendo incomodado'
+
+    <#
+        A COLETA VEM ANTES DO VEREDITO em importância: 'normal' sobre coleta
+        parada não é notícia boa, é ausência de notícia.
+    #>
+    $relParada = [pscustomobject]@{
+        host = 'M'; window = '2026-08-16'; verdict = 'normal'; findings = @()
+        health = [pscustomobject]@{ ok = $false; reason = 'a ronda parou ha 3 horas' }
+        coverage = [pscustomobject]@{ complete = $true }; notifyReason = 'coleta parada'
+    }
+    $null = & $tg -Text 'x' -Report $relParada -Config $cfgTg -CaminhoConfig $bomCfg -Transporte $entrega
+    Assert-True ($capturado.body.text -match 'COLETA') 'coleta parada aparece na mensagem, mesmo com veredito normal'
+    Assert-True ($capturado.body.text -match 'parou ha 3 horas') 'com a razão medida'
+
+    $relIncompleto = [pscustomobject]@{
+        host = 'M'; window = '2026-08-16'; verdict = 'normal'; findings = @()
+        health = [pscustomobject]@{ ok = $true }
+        coverage = [pscustomobject]@{ complete = $false }; notifyReason = 'pulso'
+    }
+    $null = & $tg -Text 'x' -Report $relIncompleto -Config $cfgTg -CaminhoConfig $bomCfg -Transporte $entrega
+    Assert-True ($capturado.body.text -match 'INCOMPLETA') '"nenhum achado" nunca vai sozinho: a cobertura incompleta é dita'
+
+    <#
+        O TELEGRAM RESPONDE 200 COM ok=false — e esta é a asserção que mais
+        importa. Tratar "houve resposta" como "entregou" faria o driver avançar
+        o estado do dia e nunca mais tentar: o aviso sumiria com o sistema
+        achando que avisou.
+    #>
+    $recusa = { param($u, $b) [pscustomobject]@{ ok = $false; description = 'chat not found' } }
+    $r = & $tg -Text 'x' -Report $relTg -Config $cfgTg -CaminhoConfig $bomCfg -Transporte $recusa
+    Assert-True (-not $r.ok) 'resposta com ok=false NÃO conta como entregue'
+    Assert-True ($r.detail -match 'chat not found') 'e o motivo do Telegram é preservado'
+
+    $explode = { param($u, $b) throw 'a rede caiu' }
+    $r = & $tg -Text 'x' -Report $relTg -Config $cfgTg -CaminhoConfig $bomCfg -Transporte $explode
+    Assert-True (-not $r.ok) 'transporte que explode vira falha declarada'
+    Assert-True ($r.detail -match 'a rede caiu') 'com a causa registrada'
+
+    <#
+        NÃO CONFIGURADO É FALHA DECLARADA. Um throw aqui derrubaria a entrega
+        dos OUTROS canais: o relatório deixaria de ser gravado em disco porque o
+        Telegram não está montado.
+    #>
+    $r = & $tg -Text 'x' -Report $relTg -Config $cfgTg -CaminhoConfig (Join-Path $tmp 'nao-existe.json') -Transporte $entrega
+    Assert-True (-not $r.ok) 'sem configuração, o canal diz que não entregou'
+    Assert-True ($r.detail -match 'não configurado') 'nomeando a causa'
+
+    $cfgQuebrado = Join-Path $tmp 'tg-quebrado.json'
+    [System.IO.File]::WriteAllText($cfgQuebrado, '{isto nao e json', (New-Object System.Text.UTF8Encoding($false)))
+    $r = & $tg -Text 'x' -Report $relTg -Config $cfgTg -CaminhoConfig $cfgQuebrado -Transporte $entrega
+    Assert-True (-not $r.ok) 'configuração ilegível não explode: vira falha declarada'
+
+    $cfgSemToken = Join-Path $tmp 'tg-sem-token.json'
+    [System.IO.File]::WriteAllText($cfgSemToken, '{"chatId":"999"}', (New-Object System.Text.UTF8Encoding($false)))
+    $r = & $tg -Text 'x' -Report $relTg -Config $cfgTg -CaminhoConfig $cfgSemToken -Transporte $entrega
+    Assert-True (-not $r.ok) 'configuração sem token é recusada antes de tentar a rede'
+    Assert-True ($r.detail -match 'incompleta') 'dizendo que está incompleta'
+
+    <#
+        CORTE DECLARADO. O Telegram corta em 4096; meia frase entregue como se
+        fosse a mensagem inteira é a mesma família de defeito que ausência
+        virando zero.
+    #>
+    $muitos = @(1..400 | ForEach-Object { [pscustomobject]@{ severity = 'agir'; claim = "achado numero $_ com texto suficientemente longo para encher a mensagem" } })
+    $relEnorme = [pscustomobject]@{
+        host = 'M'; window = '2026-08-16'; verdict = 'agir'; findings = $muitos
+        health = [pscustomobject]@{ ok = $true }
+        coverage = [pscustomobject]@{ complete = $true }; notifyReason = 'muitos'
+    }
+    $null = & $tg -Text 'x' -Report $relEnorme -Config $cfgTg -CaminhoConfig $bomCfg -Transporte $entrega
+    Assert-True ($capturado.body.text.Length -le 4096) 'a mensagem respeita o teto do Telegram'
+    Assert-True ($capturado.body.text -match 'cortada no limite') 'e o corte é DITO, não silencioso'
+
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

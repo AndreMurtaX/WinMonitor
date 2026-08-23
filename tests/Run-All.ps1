@@ -111,7 +111,7 @@ param(
     #>
     [switch]$SemSombra,
     [int]$BateriaTimeoutSec = 5400,
-    [int]$MutantesMin = 87,
+    [int]$MutantesMin = 93,
     <#
         Pisos das duas varreduras, pela mesma razão do piso por suíte: varredura
         que encolhe fica vacuamente verde. Medido: reduzir a guarda de LF a
@@ -122,8 +122,8 @@ param(
         Atualizados à mão quando o projeto cresce. Se se ajustassem sozinhos,
         não seriam piso.
     #>
-    [int]$ArquivosCrlfMin = 41,
-    [int]$ArquivosSombraMin = 41
+    [int]$ArquivosCrlfMin = 42,
+    [int]$ArquivosSombraMin = 42
 )
 
 <#
@@ -156,14 +156,84 @@ function Write-WMErroDeUso {
     [Console]::Error.WriteLine("ERRO: $Mensagem")
 }
 
+<#
+    LER SAIDA DE PROCESSO FILHO SEM ADIVINHAR A CODIFICACAO.
+
+    Este projeto ja errou nos DOIS sentidos, e a segunda vez foi por a primeira
+    medicao ter envelhecido:
+
+      1. A versao original lia com -Encoding UTF8. Medido byte a byte: o filho
+         escrevia CP850, e a leitura UTF8 DESTRUIA o acento. Trocado para OEM,
+         com a medicao escrita no comentario.
+
+      2. Depois a pagina de codigo do console desta maquina passou a ser 65001
+         (UTF-8). O filho passou a escrever UTF-8, a leitura OEM passou a
+         destruir o acento, e SETE assercoes do Test-Gate ficaram vermelhas -
+         todas as que casavam palavra acentuada, e nenhuma das que nao casavam.
+
+    Nas duas vezes o codigo estava correto para a maquina onde foi medido e
+    errado para a maquina do lado. O verde dependia de 'chcp', que e ambiente,
+    e nao de codigo.
+
+    Agora nao se escolhe: leem-se os BYTES e tenta-se UTF-8 ESTRITO. Conteudo
+    que nao e UTF-8 lanca - em vez de virar U+FFFD em silencio - e ai e lido na
+    pagina OEM. E o mesmo desenho de tools\Repair-Encoding.ps1, pelo mesmo
+    motivo. A duplicacao deste bloco entre os arquivos e deliberada: o portao
+    nao depende de src\, para poder julgar src\.
+
+    O QUE ISTO NAO RESOLVE, dito em vez de negado: uma sequencia CP850 que por
+    acaso seja UTF-8 valido seria lida como UTF-8. Para texto latino com uma ou
+    duas letras acentuadas isso e improvavel, e nao ha como distinguir sem
+    perguntar ao filho qual codificacao ele usou - coisa que a API nao oferece.
+#>
+function Read-WMSaidaFilho {
+    param([string]$Caminho)
+    if (-not (Test-Path -LiteralPath $Caminho)) { return '' }
+    <#
+        FileShare.ReadWrite, e NAO ReadAllBytes.
+
+        [IO.File]::ReadAllBytes abre sem compartilhamento e estoura se outro
+        processo ainda segura o arquivo. Medido pelo mutante BL-92: com ele, o
+        portao filho nao espera a bateria terminar, o processo dela continua com
+        o handle de redirecao aberto, e a leitura estourava - derrubando a suite
+        sem resumo, o que a bateria classifica como INCONCLUSIVO.
+
+        Get-Content, que estava aqui antes, lia COMPARTILHADO. A troca por
+        ReadAllBytes consertou a codificacao e trouxe esta fragilidade junto. Foi
+        a propria bateria que a encontrou, no mutante seguinte.
+
+        Falha de leitura devolve vazio em vez de lancar, como o
+        '-ErrorAction SilentlyContinue' que havia antes: um auxiliar de leitura
+        que derruba quem o chama transforma diagnostico em morte.
+    #>
+    $bytes = $null
+    try {
+        $fs = New-Object System.IO.FileStream($Caminho, [System.IO.FileMode]::Open,
+                                              [System.IO.FileAccess]::Read,
+                                              [System.IO.FileShare]::ReadWrite)
+        try {
+            $bytes = New-Object byte[] $fs.Length
+            [void]$fs.Read($bytes, 0, $bytes.Length)
+        } finally { $fs.Dispose() }
+    } catch { return '' }
+    if ($null -eq $bytes -or $bytes.Length -eq 0) { return '' }
+    try {
+        $estrito = New-Object System.Text.UTF8Encoding($false, $true)
+        return $estrito.GetString($bytes)
+    } catch {
+        $oem = [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
+        return $oem.GetString($bytes)
+    }
+}
+
 $suites = @(
     @{ file = 'Test-Rollup.ps1';      min = 147 }
     @{ file = 'Test-Rules.ps1';       min = 150 }
     @{ file = 'Test-Laudo.ps1';       min = 170 }
     @{ file = 'Test-LaudoDriver.ps1'; min = 37  }
-    @{ file = 'Test-Report.ps1';      min = 93  }
+    @{ file = 'Test-Report.ps1';      min = 116 }
     @{ file = 'Test-Exam.ps1';        min = 129 }
-    @{ file = 'Test-Gate.ps1';        min = 135 }
+    @{ file = 'Test-Gate.ps1';        min = 141 }
     @{ file = 'Test-Drivers.ps1';     min = 80  }
     @{ file = 'Test-Patrol.ps1';      min = 52  }
 )
@@ -302,29 +372,35 @@ foreach ($s in $suites) {
         continue
     }
     <#
-        -Encoding OEM, e a escolha foi MEDIDA byte a byte.
+        A CODIFICACAO NAO E ESCOLHIDA AQUI: ela e DETECTADA, e este comentario
+        e o registro de por que.
 
-        Quem escreve este arquivo é a redireção de console do powershell.exe
-        filho, que usa a página de código do console — cp850 nesta máquina — e
-        NÃO o projeto. A doutrina de UTF-8 daqui vale para os arquivos que o
-        projeto grava; aplicá-la aqui foi erro meu, e um erro que piorou o que
-        pretendia consertar:
+        Quem escreve o arquivo e a redirecao de console do powershell.exe filho,
+        que usa a pagina de codigo do CONSOLE - nao a doutrina de UTF-8 deste
+        projeto, que vale para os arquivos que ele mesmo grava.
+
+        A versao original lia com UTF8 e destruia o acento. Medido byte a byte,
+        com o console em cp850:
 
             bytes no arquivo (cp850) : 210,135,198,130
-            lido como UTF8           : 1159,386          dois chars, irreversível
-            lido como Default        : 210,8225,198,8218 lixo, mas reversível
+            lido como UTF8           : 1159,386          dois chars, irreversivel
             lido como OEM            : 202,231,227,233   CORRETO
 
-        Ou seja, a "correção" fundia dois bytes num caractere e destruía
-        informação que a leitura anterior preservava. Só funcionaria com o
-        console em cp65001, o oposto do padrão em pt-BR.
+        Trocado para OEM, com a medicao escrita aqui. E a medicao ENVELHECEU: a
+        pagina de codigo desta maquina passou a ser 65001, o filho passou a
+        escrever UTF-8, e a leitura OEM passou a destruir o acento - sete
+        assercoes do Test-Gate vermelhas, todas as que casavam palavra
+        acentuada e nenhuma das que nao casavam.
 
-        Não afeta contagem, que é ASCII; afeta exatamente a parte que existe
-        para uma pessoa entender por que reprovou.
+        Nas duas vezes o codigo estava certo para a maquina onde foi medido e
+        errado para a do lado. O verde dependia de 'chcp', que e ambiente.
+
+        Read-WMSaidaFilho nao escolhe: tenta UTF-8 ESTRITO e cai para OEM quando
+        os bytes nao sao UTF-8 validos.
     #>
     $codigo = $proc.ExitCode
-    $texto  = (Get-Content -LiteralPath $tmpOut -Raw -Encoding OEM -ErrorAction SilentlyContinue) + "`n" +
-              (Get-Content -LiteralPath ($tmpOut + '.err') -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+    $texto  = (Read-WMSaidaFilho $tmpOut) + "`n" +
+              (Read-WMSaidaFilho ($tmpOut + '.err'))
     Remove-Item -LiteralPath $tmpOut, ($tmpOut + '.err') -Force -ErrorAction SilentlyContinue
 
     if ($Quiet) { ($texto -split "`n" | Select-Object -Last 6) -join "`n" } else { $texto }
@@ -510,8 +586,8 @@ if ($SemSombra) {
         try { $psom.Kill() } catch { }
         [void]$falhas.Add('varredura de sombra de parâmetro: estourou o prazo e foi morta')
     } else {
-        $txtSom = (Get-Content -LiteralPath $somOut -Raw -Encoding OEM -ErrorAction SilentlyContinue) + "`n" +
-                  (Get-Content -LiteralPath ($somOut + '.err') -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+        $txtSom = (Read-WMSaidaFilho $somOut) + "`n" +
+                  (Read-WMSaidaFilho ($somOut + '.err'))
         if (-not $Quiet) { $txtSom.TrimEnd() }
         <#
             OS DOIS DESFECHOS SAO DIFERENTES, e o portao jogava fora a distincao
@@ -599,8 +675,8 @@ if ($Rapido -or $SemBateria) {
             $codBat = -1
         } else {
             $codBat = $pb.ExitCode
-            $saidaBat = (Get-Content -LiteralPath $batOut -Raw -Encoding OEM -ErrorAction SilentlyContinue) + "`n" +
-                        (Get-Content -LiteralPath ($batOut + '.err') -Raw -Encoding OEM -ErrorAction SilentlyContinue)
+            $saidaBat = (Read-WMSaidaFilho $batOut) + "`n" +
+                        (Read-WMSaidaFilho ($batOut + '.err'))
         }
         Remove-Item -LiteralPath $batOut, ($batOut + '.err') -Force -ErrorAction SilentlyContinue
 

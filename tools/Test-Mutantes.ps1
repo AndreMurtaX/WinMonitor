@@ -115,13 +115,41 @@ $mutantes = @(
        de='$esperadasAteAgora = [Math]::Max(1.0, $minutosDoDia / [Math]::Max(1, $IntervalMinutes))'
        para='$esperadasAteAgora = [double]$saude.expectedPerDay'; suite='Test-Report.ps1' }
 
-    @{ id='BL-4a'; nome='o portão lê o stdout com OEM';           arq='tests\Run-All.ps1'
-       de='(Get-Content -LiteralPath $tmpOut -Raw -Encoding OEM -ErrorAction SilentlyContinue)'
-       para='(Get-Content -LiteralPath $tmpOut -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)'; suite='Test-Gate.ps1' }
+    <#
+        A LEITURA DE SAIDA DETECTA A CODIFICACAO EM VEZ DE ESCOLHE-LA.
 
-    @{ id='BL-4a2'; nome='o portão lê o stderr com OEM';          arq='tests\Run-All.ps1'
-       de='(Get-Content -LiteralPath ($tmpOut + ''.err'') -Raw -Encoding OEM -ErrorAction SilentlyContinue)'
-       para='(Get-Content -LiteralPath ($tmpOut + ''.err'') -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)'; suite='Test-Gate.ps1' }
+        Estes dois substituem os antigos, que trocavam '-Encoding OEM' por
+        '-Encoding UTF8'. Aquela escolha estava MEDIDA byte a byte, e a medicao
+        ENVELHECEU: a pagina de codigo desta maquina passou a ser 65001, o filho
+        passou a escrever UTF-8, e a leitura OEM passou a destruir o acento.
+        Sete assercoes vermelhas - todas as que casavam palavra acentuada, e
+        nenhuma das que nao casavam.
+
+        BL-4a fixa a leitura em cp850: numa maquina com console UTF-8 o acento
+        das mensagens do portao chega quebrado e os cenarios acentuados acusam.
+
+        BL-4a2 fixa o RECUO em UTF-8, matando o ramo que existe para console
+        cp850. Ele mira a copia do Test-Gate porque e la que estao os testes de
+        bytes sinteticos - a unica forma de exercitar esse ramo numa maquina
+        cujo console e UTF-8.
+    #>
+    @{ id='BL-4a'; nome='a leitura nao e fixada em cp850';        arq='tests\Run-All.ps1'
+       de='$estrito = New-Object System.Text.UTF8Encoding($false, $true)'
+       para='$estrito = [System.Text.Encoding]::GetEncoding(850)'; suite='Test-Gate.ps1' }
+
+    <#
+        Ler COMPARTILHADO. ReadAllBytes abre sem compartilhamento e estoura se
+        outro processo ainda segura o arquivo - que e o caso sempre que o portao
+        mata um filho por prazo e le a saida dele em seguida.
+    #>
+    @{ id='BL-4a3'; nome='a leitura de saida e compartilhada';    arq='tests\Test-Gate.ps1'
+       de='$fs = New-Object System.IO.FileStream($Caminho, [System.IO.FileMode]::Open,'
+       para='$bytes = [System.IO.File]::ReadAllBytes($Caminho); $fs = New-Object System.IO.FileStream($Caminho, [System.IO.FileMode]::Open,'
+       suite='Test-Gate.ps1' }
+
+    @{ id='BL-4a2'; nome='o recuo para cp850 existe e funciona';  arq='tests\Test-Gate.ps1'
+       de='$oem = [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)'
+       para='$oem = [System.Text.Encoding]::UTF8'; suite='Test-Gate.ps1' }
 
     <#
         O canal local monta XML. Sem escapar, um '&' vindo de nome de disco
@@ -416,6 +444,36 @@ $mutantes = @(
        de="return @{ ok = `$true; reason = `"Get-StorageReliabilityCounter falhou (exige elevação): `$(`$_.Exception.Message)`""
        para="return @{ ok = `$false; reason = `"Get-StorageReliabilityCounter falhou (exige elevação): `$(`$_.Exception.Message)`""
        suite='Test-Exam.ps1' }
+    <#
+        O CANAL TELEGRAM. Ele existe porque os outros dois falham exatamente
+        quando mais precisam funcionar: o de arquivo escreve num disco que pode
+        ser o que esta morrendo, e o toast aparece na sessao interativa - que a
+        ronda deixou de ter quando passou para S4U.
+
+        BL-TG1 e o que mais importa: o Telegram responde HTTP 200 COM ok=false.
+        Tratar "houve resposta" como "entregou" faria o driver avancar o estado
+        do dia e nunca mais tentar - o aviso sumiria com o sistema achando que
+        avisou.
+    #>
+    @{ id='BL-TG1'; nome='200 com ok=false NAO e entrega';        arq='src\notifiers\Notify-Telegram.ps1'
+       de='if ($resp -and $resp.ok -eq $true) {'; para='if ($resp) {'; suite='Test-Report.ps1' }
+
+    @{ id='BL-TG2'; nome='nao configurado nao vira entrega';      arq='src\notifiers\Notify-Telegram.ps1'
+       de='return @{ ok = $false; detail = "não configurado: $arqCfg não existe (crie com token e chatId do bot)" }'
+       para='return @{ ok = $true; detail = "não configurado: $arqCfg não existe (crie com token e chatId do bot)" }'
+       suite='Test-Report.ps1' }
+
+    @{ id='BL-TG3'; nome='o corte da mensagem e DITO';            arq='src\notifiers\Notify-Telegram.ps1'
+       de='$corpo = $corpo.Substring(0, $LIMITE_TELEGRAM - $aviso.Length) + $aviso'
+       para='$corpo = $corpo.Substring(0, $LIMITE_TELEGRAM)'; suite='Test-Report.ps1' }
+
+    @{ id='BL-TG4'; nome='cobertura incompleta vai na mensagem';  arq='src\notifiers\Notify-Telegram.ps1'
+       de='if ($Report.coverage -and $Report.coverage.complete -ne $true) {'
+       para='if ($false) {'; suite='Test-Report.ps1' }
+
+    @{ id='BL-TG5'; nome='coleta parada vai na mensagem';         arq='src\notifiers\Notify-Telegram.ps1'
+       de='if ($Report.health -and $Report.health.ok -ne $true) {'
+       para='if ($false) {'; suite='Test-Report.ps1' }
     @{ id='A5';    nome='regra malformada conta como lacuna';     arq='src\WinMonitor.Rules.psm1'
        de='$lacunas = $semFonte.Count + $malformadas.Count + $semDado.Count'
        para='$lacunas = $semFonte.Count + $semDado.Count'; suite='Test-Rules.ps1' }
