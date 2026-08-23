@@ -386,7 +386,7 @@ $mutantes = @(
         MESMO commit que a escreveu mediu as duas como falsas.
     #>
     @{ id='BL-P3'; nome='o plano nao promete o que nao destrava'; arq='tools\Register-PatrolTask.ps1'
-       de='ATENCAO: a ronda NAO le SMART fino'
+       de='ATENCAO: a RONDA em si nao le SMART fino'
        para='a ronda passa a poder ler SMART detalhado'; suite='Test-Drivers.ps1' }
     <#
         AS TRES INVARIANTES DA RONDA que nenhuma das nove suites defendia.
@@ -474,6 +474,91 @@ $mutantes = @(
     @{ id='BL-TG5'; nome='coleta parada vai na mensagem';         arq='src\notifiers\Notify-Telegram.ps1'
        de='if ($Report.health -and $Report.health.ok -ne $true) {'
        para='if ($false) {'; suite='Test-Report.ps1' }
+    <#
+        A CADEIA DIARIA, e as duas travas dela nasceram de defeitos da propria
+        peca, medidos na primeira execucao dela.
+
+        BL-DI1: a primeira versao so olhava se a etapa ESTOURAVA. Os scripts do
+        projeto nao lancam - avisam com Write-Warning e retornam -, entao as
+        tres emitiram aviso, nenhuma produziu arquivo, e a cadeia imprimiu
+        "COMPLETA: agregado, avaliado e entregue" saindo com ZERO. E o defeito
+        assinatura deste projeto dentro da peca escrita para acabar com ele.
+
+        BL-DI2: a deteccao de aviso usava '-match', que e INSENSIVEL A CAIXA, e
+        casava "Motivo do aviso: pulso" - texto legitimo de todo relatorio
+        entregue. A cadeia reprovava num dia em que as tres etapas produziram
+        tudo. Mesma armadilha do '-eq' da saude de disco, noutra roupa.
+    #>
+    @{ id='BL-DI1'; nome='etapa que nao produz nao e sucesso';    arq='src\Invoke-Diario.ps1'
+       de='if ($qtd -eq 0) {'; para='if ($false) {'; suite='Test-Drivers.ps1' }
+
+    @{ id='BL-DI2'; nome='so o PREFIXO de aviso conta';           arq='src\Invoke-Diario.ps1'
+       de='if ($linha -cmatch ''^\s*(AVISO|WARNING):'') {'
+       para='if ($linha -match ''AVISO|WARNING'') {'; suite='Test-Drivers.ps1' }
+
+    <#
+        OS HORARIOS DAS TAREFAS CARREGAM UMA DECISAO INVISIVEL.
+
+        O exame grava o dia CORRENTE; a cadeia fecha o dia ANTERIOR. Roda-los
+        juntos depois da meia-noite deixaria todo dia sem exame, e as duas
+        regras de falha de hardware cairiam em "sem dado" para sempre - em
+        silencio, com o veredito saindo 'normal'.
+
+        BL-RT1 junta os dois no mesmo horario, que e o que alguem faria ao
+        "arrumar" a lista achando que sao intercambiaveis.
+        BL-RT2 tira o teto de tempo do exame, que le o log de eventos - a unica
+        sonda deste projeto sem prazo confiavel.
+    #>
+    @{ id='BL-RT1'; nome='exame e cadeia nao rodam juntos';       arq='tools\Register-Tasks.ps1'
+       de="hora = '23:50'"; para="hora = '00:20'"; suite='Test-Drivers.ps1' }
+
+    @{ id='BL-RT2'; nome='o exame tem teto de tempo';             arq='tools\Register-Tasks.ps1'
+       de='limite = 20'; para='limite = 999'; suite='Test-Drivers.ps1' }
+    <#
+        AS TRES TRAVAS QUE NASCERAM DE DANO REAL NO CELULAR DO DONO.
+
+        BL-TG6: a suite roda Invoke-Report contra projetos COPIADOS, com host
+        'FIXTURE-HOST'. Com o canal no config, cada execucao mandava mensagem de
+        verdade - onze em poucos minutos, sobre uma maquina que nao existe.
+        Teste com efeito colateral no mundo treina a pessoa a ignorar o canal.
+
+        BL-TG7: repetir a mesma frase todo dia produz o mesmo efeito por outro
+        caminho. Mensagem identica e sem erro nao e reenviada.
+
+        BL-TG8: e a EXCECAO importa mais que a regra. Com achado, ou com a coleta
+        doente, a mensagem sai mesmo identica: "o disco continua doente" e
+        noticia todo dia que continuar, e silenciar por repeticao seria a
+        ausencia virando boa noticia.
+    #>
+    @{ id='BL-TG6'; nome='so avisa sobre ESTA maquina';           arq='src\notifiers\Notify-Telegram.ps1'
+       de='([string]$Report.host) -ne $daquiMesmo) {'; para='$false) {'; suite='Test-Report.ps1' }
+
+    @{ id='BL-TG7'; nome='mensagem identica nao e reenviada';     arq='src\notifiers\Notify-Telegram.ps1'
+       de='if (([string]$anterior).Trim() -ceq ([string]$corpo).Trim()) {'
+       para='if ($false) {'; suite='Test-Report.ps1' }
+
+    @{ id='BL-TG8'; nome='com erro, repete mesmo assim';          arq='src\notifiers\Notify-Telegram.ps1'
+       de='if (-not $temErro) {'; para='if ($true) {'; suite='Test-Report.ps1' }
+
+    @{ id='BL-TG9'; nome='so grava o corpo APOS confirmacao';     arq='src\notifiers\Notify-Telegram.ps1'
+       de='        try { [System.IO.File]::WriteAllText($arqUltimo, $corpo, (New-Object System.Text.UTF8Encoding($false))) } catch { }
+        return @{ ok = $true; detail = "enviado ao chat'
+       para='        return @{ ok = $true; detail = "enviado ao chat'
+       suite='Test-Report.ps1' }
+    <#
+        PRAZO ESTOURADO NAO APAGA O QUE JA FOI MEDIDO. A versao anterior zerava
+        a saida da bateria morta: 101 mutantes, 90 minutos de trabalho, e o
+        portao imprimia "estourou o prazo" e mais nada. Trava indefesa entre os
+        avaliados ficaria invisivel justamente na execucao mais demorada.
+    #>
+    @{ id='BL-93b'; nome='o parcial da bateria morta sobrevive';  arq='tests\Run-All.ps1'
+       de='            $saidaBat = (Read-WMSaidaFilho $batOut) + "`n" +
+                        (Read-WMSaidaFilho ($batOut + ''.err''))
+            $avaliados'
+       para='            $saidaBat = ''''
+            $avaliados'; suite='Test-Gate.ps1' }
+    @{ id='BL-93c'; nome='-Quiet nao esconde bateria morta';      arq='tests\Run-All.ps1'
+       de='if ($Quiet -and $codBat -ne -1) {'; para='if ($Quiet) {'; suite='Test-Gate.ps1' }
     @{ id='A5';    nome='regra malformada conta como lacuna';     arq='src\WinMonitor.Rules.psm1'
        de='$lacunas = $semFonte.Count + $malformadas.Count + $semDado.Count'
        para='$lacunas = $semFonte.Count + $semDado.Count'; suite='Test-Rules.ps1' }

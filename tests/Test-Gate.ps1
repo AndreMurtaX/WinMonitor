@@ -632,10 +632,22 @@ try {
     Assert-True (-not $r.aprovou) 'bateria com DOIS resumos reprova: não dá para saber qual vale'
     Assert-True ($r.text -match 'resumos') 'e o motivo nomeia isso'
 
-    # A bateria também tem prazo — antes rodava fora de todo teto do portão.
-    $r = Invoke-ComBateria "Start-Sleep -Seconds 30`r`n'TODOS OS 1 MUTANTES MORRERAM'`r`nexit 0`r`n" -PrazoBateria 2
+    <#
+        A bateria também tem prazo — antes rodava fora de todo teto do portão.
+
+        E O PARCIAL DELA SOBREVIVE À MORTE. A bateria sintética abaixo avalia um
+        mutante, IMPRIME o resultado e só então trava. Medido na execução real
+        que motivou isto: 101 mutantes, 90 minutos, morta pelo teto — e o portão
+        imprimiu "estourou o prazo" e mais nada, porque zerava a saída.
+
+        Se houvesse trava indefesa entre os avaliados, ela ficaria invisível
+        justamente na execução que mais demorou a chegar nela.
+    #>
+    $r = Invoke-ComBateria "'  morto  X'`r`nStart-Sleep -Seconds 30`r`n'TODOS OS 1 MUTANTES MORRERAM'`r`nexit 0`r`n" -PrazoBateria 3
     Assert-True (-not $r.aprovou) 'bateria que trava reprova por prazo'
     Assert-True ($r.text -match 'prazo') 'e o motivo nomeia o prazo'
+    Assert-True ($r.text -match 'apos avaliar 1 mutante') 'e DIZ quantos mutantes ela chegou a avaliar'
+    Assert-True ($r.text -match 'morto  X') 'com o parcial dela preservado, não descartado'
 
     <#
         -BateriaPath É COSTURA, e costura tem de ficar confinada à aferição.

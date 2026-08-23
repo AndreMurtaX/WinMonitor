@@ -622,7 +622,7 @@ try {
     Assert-True (Test-Path $tg) 'o canal Telegram existe'
 
     $relTg = [pscustomobject]@{
-        host = 'MAQUINA-X'; window = '2026-08-16'; verdict = 'parar'
+        host = [string]$env:COMPUTERNAME; window = '2026-08-16'; verdict = 'parar'
         findings = @([pscustomobject]@{ severity = 'parar'; claim = 'O Windows registrou erro de hardware (WHEA)' })
         health = [pscustomobject]@{ ok = $true }
         coverage = [pscustomobject]@{ complete = $true }
@@ -660,7 +660,7 @@ try {
     #>
     Assert-True (-not $capturado.body.ContainsKey('parse_mode')) 'a mensagem vai como texto puro: nome de peça não vira sintaxe'
 
-    Assert-True ($capturado.body.text -match 'MAQUINA-X') 'a mensagem diz de qual máquina fala'
+    Assert-True ($capturado.body.text -match [regex]::Escape([string]$env:COMPUTERNAME)) 'a mensagem diz de qual máquina fala'
     Assert-True ($capturado.body.text -match 'PARAR') 'e o veredito vem em destaque'
     Assert-True ($capturado.body.text -match 'WHEA') 'com o achado que motivou o aviso'
     Assert-True ($capturado.body.text -match 'achado novo') 'e o motivo pelo qual ele está sendo incomodado'
@@ -670,7 +670,7 @@ try {
         parada não é notícia boa, é ausência de notícia.
     #>
     $relParada = [pscustomobject]@{
-        host = 'M'; window = '2026-08-16'; verdict = 'normal'; findings = @()
+        host = [string]$env:COMPUTERNAME; window = '2026-08-16'; verdict = 'normal'; findings = @()
         health = [pscustomobject]@{ ok = $false; reason = 'a ronda parou ha 3 horas' }
         coverage = [pscustomobject]@{ complete = $true }; notifyReason = 'coleta parada'
     }
@@ -679,12 +679,99 @@ try {
     Assert-True ($capturado.body.text -match 'parou ha 3 horas') 'com a razão medida'
 
     $relIncompleto = [pscustomobject]@{
-        host = 'M'; window = '2026-08-16'; verdict = 'normal'; findings = @()
+        host = [string]$env:COMPUTERNAME; window = '2026-08-16'; verdict = 'normal'; findings = @()
         health = [pscustomobject]@{ ok = $true }
         coverage = [pscustomobject]@{ complete = $false }; notifyReason = 'pulso'
     }
     $null = & $tg -Text 'x' -Report $relIncompleto -Config $cfgTg -CaminhoConfig $bomCfg -Transporte $entrega
     Assert-True ($capturado.body.text -match 'INCOMPLETA') '"nenhum achado" nunca vai sozinho: a cobertura incompleta é dita'
+
+    <#
+        SÓ SE AVISA SOBRE ESTA MÁQUINA — e esta trava nasceu de dano real.
+
+        A suíte roda Invoke-Report contra projetos COPIADOS, com fixtures cujo
+        host é 'FIXTURE-HOST'. Com o canal registrado no config, cada execução
+        mandava mensagem de verdade para o celular do dono: onze em poucos
+        minutos, todas sobre uma máquina que não existe.
+
+        Teste com efeito colateral no mundo é pior que teste nenhum — ele treina
+        a pessoa a ignorar o canal, que é o oposto do que um canal de aviso
+        precisa.
+    #>
+    $relOutra = [pscustomobject]@{
+        host = 'FIXTURE-HOST'; window = '2026-08-22'; verdict = 'normal'; findings = @()
+        health = [pscustomobject]@{ ok = $true }
+        coverage = [pscustomobject]@{ complete = $true }; notifyReason = 'x'
+    }
+    $r = & $tg -Text 'x' -Report $relOutra -Config $cfgTg -CaminhoConfig $bomCfg -Transporte $entrega
+    Assert-True (-not $r.ok) 'relatório de OUTRA máquina não vira aviso daqui'
+    Assert-True ($r.detail -match 'não desta máquina') 'e o motivo diz exatamente isso'
+
+    <#
+        MENSAGEM IDÊNTICA NÃO É REENVIADA, salvo quando há erro.
+
+        Repetir a mesma frase todo dia treina a pessoa a ignorar o canal. Mas a
+        EXCEÇÃO importa mais que a regra: com achado, ou com a coleta doente, a
+        mensagem sai mesmo idêntica — "o disco continua doente" é notícia todo
+        dia que continuar, e silenciar por repetição seria a ausência virando
+        boa notícia.
+    #>
+    $cfgDedup = Join-Path $tmp 'tg-dedup.json'
+    [System.IO.File]::WriteAllText($cfgDedup, '{"token":"111:XYZ","chatId":"42"}', (New-Object System.Text.UTF8Encoding($false)))
+
+    $daqui = [string]$env:COMPUTERNAME
+    $semErro = [pscustomobject]@{
+        host = $daqui; window = '2026-08-22'; verdict = 'normal'; findings = @()
+        health = [pscustomobject]@{ ok = $true }
+        coverage = [pscustomobject]@{ complete = $true }; notifyReason = 'pulso'
+    }
+    $comAchado = [pscustomobject]@{
+        host = $daqui; window = '2026-08-22'; verdict = 'parar'
+        findings = @([pscustomobject]@{ severity = 'parar'; claim = 'o disco continua doente' })
+        health = [pscustomobject]@{ ok = $true }
+        coverage = [pscustomobject]@{ complete = $true }; notifyReason = 'achado'
+    }
+    $comColetaRuim = [pscustomobject]@{
+        host = $daqui; window = '2026-08-22'; verdict = 'normal'; findings = @()
+        health = [pscustomobject]@{ ok = $false; reason = 'a ronda parou' }
+        coverage = [pscustomobject]@{ complete = $true }; notifyReason = 'coleta parada'
+    }
+
+    $r = & $tg -Text 'x' -Report $semErro -Config $cfgTg -CaminhoConfig $cfgDedup -Transporte $entrega
+    Assert-True $r.ok 'sem erro, a primeira mensagem é enviada'
+
+    $r = & $tg -Text 'x' -Report $semErro -Config $cfgTg -CaminhoConfig $cfgDedup -Transporte $entrega
+    Assert-True $r.ok 'a repetição não é falha: o canal fez o trabalho dele'
+    Assert-True ($r.detail -match 'não reenviada') 'mas ela NÃO é reenviada'
+
+    $r = & $tg -Text 'x' -Report $comAchado -Config $cfgTg -CaminhoConfig $cfgDedup -Transporte $entrega
+    Assert-True ($r.detail -match 'enviado ao chat') 'com achado, envia'
+    $r = & $tg -Text 'x' -Report $comAchado -Config $cfgTg -CaminhoConfig $cfgDedup -Transporte $entrega
+    Assert-True ($r.detail -match 'enviado ao chat') 'e REPETE com achado: disco doente é notícia todo dia'
+
+    $r = & $tg -Text 'x' -Report $comColetaRuim -Config $cfgTg -CaminhoConfig $cfgDedup -Transporte $entrega
+    Assert-True ($r.detail -match 'enviado ao chat') 'coleta doente também sempre envia'
+    $r = & $tg -Text 'x' -Report $comColetaRuim -Config $cfgTg -CaminhoConfig $cfgDedup -Transporte $entrega
+    Assert-True ($r.detail -match 'enviado ao chat') 'e também repete'
+
+    <#
+        O CORPO SÓ É GRAVADO DEPOIS DE O TELEGRAM CONFIRMAR. Gravar antes faria
+        uma tentativa RECUSADA silenciar a próxima por "já mandei isso" — o
+        aviso sumiria duas vezes: uma pela recusa e outra pela deduplicação
+        baseada num envio que nunca aconteceu.
+    #>
+    $cfgRec = Join-Path $tmp 'tg-recusa.json'
+    [System.IO.File]::WriteAllText($cfgRec, '{"token":"111:XYZ","chatId":"43"}', (New-Object System.Text.UTF8Encoding($false)))
+    $novoTexto = [pscustomobject]@{
+        host = $daqui; window = '2026-08-23'; verdict = 'normal'; findings = @()
+        health = [pscustomobject]@{ ok = $true }
+        coverage = [pscustomobject]@{ complete = $true }; notifyReason = 'outro dia'
+    }
+    $recusaTg = { param($u, $b) [pscustomobject]@{ ok = $false; description = 'flood limit' } }
+    $r = & $tg -Text 'x' -Report $novoTexto -Config $cfgTg -CaminhoConfig $cfgRec -Transporte $recusaTg
+    Assert-True (-not $r.ok) 'tentativa recusada pelo Telegram é falha'
+    $r = & $tg -Text 'x' -Report $novoTexto -Config $cfgTg -CaminhoConfig $cfgRec -Transporte $entrega
+    Assert-True ($r.detail -match 'enviado ao chat') 'e a seguinte NÃO é silenciada por um envio que nunca aconteceu'
 
     <#
         O TELEGRAM RESPONDE 200 COM ok=false — e esta é a asserção que mais
@@ -729,7 +816,7 @@ try {
     #>
     $muitos = @(1..400 | ForEach-Object { [pscustomobject]@{ severity = 'agir'; claim = "achado numero $_ com texto suficientemente longo para encher a mensagem" } })
     $relEnorme = [pscustomobject]@{
-        host = 'M'; window = '2026-08-16'; verdict = 'agir'; findings = $muitos
+        host = [string]$env:COMPUTERNAME; window = '2026-08-16'; verdict = 'agir'; findings = $muitos
         health = [pscustomobject]@{ ok = $true }
         coverage = [pscustomobject]@{ complete = $true }; notifyReason = 'muitos'
     }

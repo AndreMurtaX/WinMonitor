@@ -90,6 +90,29 @@ try {
     }
 
     <#
+        SÓ SE MANDA AVISO SOBRE ESTA MÁQUINA.
+
+        A suíte de testes roda Invoke-Report contra projetos COPIADOS, com
+        fixtures cujo host é 'FIXTURE-HOST'. Com o canal registrado no config,
+        cada execução da suíte mandava mensagem de verdade para o celular do
+        dono — dezenas em poucos minutos, todas sobre uma máquina que não
+        existe.
+
+        Teste com efeito colateral no mundo é pior que teste nenhum: ele treina
+        a pessoa a ignorar o canal, que é o oposto do que um canal de aviso
+        precisa.
+
+        E a guarda não é só contra teste. Um relatório cujo host não é esta
+        máquina veio de fixture ou de dado de outra máquina; nos dois casos,
+        disparar alerta no telefone daqui afirma algo que não foi medido aqui.
+    #>
+    $daquiMesmo = [string]$env:COMPUTERNAME
+    if (-not [string]::IsNullOrWhiteSpace([string]$Report.host) -and
+        ([string]$Report.host) -ne $daquiMesmo) {
+        return @{ ok = $false; detail = "relatório é de '$($Report.host)', não desta máquina ($daquiMesmo): não enviado" }
+    }
+
+    <#
         A MENSAGEM, montada do mais importante para o menos.
 
         Quem lê isto está no celular, provavelmente andando. A primeira linha
@@ -145,6 +168,35 @@ try {
         $corpo = $corpo.Substring(0, $LIMITE_TELEGRAM - $aviso.Length) + $aviso
     }
 
+    <#
+        MENSAGEM IGUAL À ANTERIOR NÃO É REENVIADA — salvo quando há erro.
+
+        Repetir a mesma frase todo dia treina a pessoa a ignorar o canal, e um
+        canal de aviso ignorado é pior que canal nenhum: ele dá a impressão de
+        cobertura que não existe. O dono desta máquina pediu isso depois de
+        receber onze mensagens idênticas.
+
+        A EXCEÇÃO IMPORTA MAIS QUE A REGRA. Quando há achado, ou quando a coleta
+        não está saudável, a mensagem SAI mesmo idêntica à anterior: "o disco
+        continua doente" é notícia todo dia que continuar, e silenciar por
+        repetição seria exatamente a ausência-virando-boa-notícia que este
+        projeto inteiro recusa.
+
+        A comparação é do CORPO da mensagem, não do dia: se o texto mudou, algo
+        que interessa mudou.
+    #>
+    $temErro = (@($Report.findings | Where-Object { $_ }).Count -gt 0) -or
+               ($Report.health -and $Report.health.ok -ne $true)
+
+    $arqUltimo = Join-Path (Split-Path -Parent $arqCfg) 'winmonitor-telegram-ultimo.txt'
+    if (-not $temErro) {
+        $anterior = ''
+        try { $anterior = [string](Get-Content -LiteralPath $arqUltimo -Raw -Encoding UTF8 -ErrorAction SilentlyContinue) } catch { }
+        if (([string]$anterior).Trim() -ceq ([string]$corpo).Trim()) {
+            return @{ ok = $true; detail = 'idêntica à anterior e sem erro: não reenviada' }
+        }
+    }
+
     $url = "https://api.telegram.org/bot{0}/sendMessage" -f $cfgBot.token
     $payload = @{ chat_id = [string]$cfgBot.chatId; text = $corpo; disable_web_page_preview = $true }
 
@@ -161,6 +213,14 @@ try {
         o aviso sumiria com o sistema achando que avisou.
     #>
     if ($resp -and $resp.ok -eq $true) {
+        <#
+            O CORPO ENVIADO SÓ É GRAVADO DEPOIS DE O TELEGRAM CONFIRMAR.
+
+            Gravar antes faria uma tentativa recusada silenciar a PRÓXIMA por
+            "já mandei isso" — o aviso sumiria duas vezes: uma pela recusa e
+            outra pela deduplicação baseada num envio que nunca aconteceu.
+        #>
+        try { [System.IO.File]::WriteAllText($arqUltimo, $corpo, (New-Object System.Text.UTF8Encoding($false))) } catch { }
         return @{ ok = $true; detail = "enviado ao chat $($cfgBot.chatId) ($($corpo.Length) caracteres)" }
     }
 

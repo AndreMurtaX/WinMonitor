@@ -110,8 +110,8 @@ param(
         economia e pular por conveniência.
     #>
     [switch]$SemSombra,
-    [int]$BateriaTimeoutSec = 5400,
-    [int]$MutantesMin = 93,
+    [int]$BateriaTimeoutSec = 9000,
+    [int]$MutantesMin = 103,
     <#
         Pisos das duas varreduras, pela mesma razão do piso por suíte: varredura
         que encolhe fica vacuamente verde. Medido: reduzir a guarda de LF a
@@ -122,8 +122,8 @@ param(
         Atualizados à mão quando o projeto cresce. Se se ajustassem sozinhos,
         não seriam piso.
     #>
-    [int]$ArquivosCrlfMin = 42,
-    [int]$ArquivosSombraMin = 42
+    [int]$ArquivosCrlfMin = 44,
+    [int]$ArquivosSombraMin = 44
 )
 
 <#
@@ -231,10 +231,10 @@ $suites = @(
     @{ file = 'Test-Rules.ps1';       min = 150 }
     @{ file = 'Test-Laudo.ps1';       min = 170 }
     @{ file = 'Test-LaudoDriver.ps1'; min = 37  }
-    @{ file = 'Test-Report.ps1';      min = 116 }
+    @{ file = 'Test-Report.ps1';      min = 127 }
     @{ file = 'Test-Exam.ps1';        min = 129 }
-    @{ file = 'Test-Gate.ps1';        min = 141 }
-    @{ file = 'Test-Drivers.ps1';     min = 80  }
+    @{ file = 'Test-Gate.ps1';        min = 143 }
+    @{ file = 'Test-Drivers.ps1';     min = 105 }
     @{ file = 'Test-Patrol.ps1';      min = 52  }
 )
 
@@ -670,8 +670,28 @@ if ($Rapido -or $SemBateria) {
 
         if (-not $pb.WaitForExit($BateriaTimeoutSec * 1000)) {
             try { $pb.Kill() } catch { }
-            [void]$falhas.Add("bateria de mutação: estourou o prazo de $BateriaTimeoutSec s e foi morta")
-            $saidaBat = ''
+
+            <#
+                PRAZO ESTOURADO NÃO PODE APAGAR O QUE JÁ FOI MEDIDO.
+
+                A versão anterior zerava $saidaBat aqui. Consequência medida: a
+                bateria rodou 90 minutos, avaliou dezenas de mutantes, foi morta
+                — e o portão imprimiu "estourou o prazo" e MAIS NADA. Se houvesse
+                uma trava indefesa entre os avaliados, ela ficaria invisível
+                justamente na execução que mais demorou a chegar nela.
+
+                O processo escreve num arquivo enquanto roda, e esse arquivo
+                sobrevive à morte dele. Ler o parcial é a diferença entre "não
+                terminou" e "não sei nada".
+
+                A leitura é compartilhada (Read-WMSaidaFilho) porque o handle do
+                filho morto pode não ter sido liberado ainda — foi assim que o
+                BL-92 derrubou a suíte inteira uma vez.
+            #>
+            $saidaBat = (Read-WMSaidaFilho $batOut) + "`n" +
+                        (Read-WMSaidaFilho ($batOut + '.err'))
+            $avaliados = @([regex]::Matches($saidaBat, '(?m)^\s+(morto|VIVO|\?\?)')).Count
+            [void]$falhas.Add("bateria de mutação: estourou o prazo de $BateriaTimeoutSec s e foi morta apos avaliar $avaliados mutante(s) - o parcial dela vai abaixo")
             $codBat = -1
         } else {
             $codBat = $pb.ExitCode
@@ -680,8 +700,21 @@ if ($Rapido -or $SemBateria) {
         }
         Remove-Item -LiteralPath $batOut, ($batOut + '.err') -Force -ErrorAction SilentlyContinue
 
-        if ($Quiet) { ($saidaBat -split "`n" | Where-Object { $_ -match 'MUTANTES|indefesa|VIVO|INCONCLUSIVO|prazo' }) -join "`n" }
-        else { $saidaBat }
+        <#
+            O FILTRO DO -Quiet NÃO PODE ESCONDER EVIDÊNCIA DE FALHA.
+
+            Ele existe para o caminho feliz: com tudo morto, cem linhas de
+            'morto BL-xx' não acrescentam nada. Mas quando a bateria foi MORTA
+            por prazo, as linhas que ela alcançou a imprimir são exatamente o
+            que o operador precisa — e o filtro as descartava, deixando só o
+            aviso de prazo.
+
+            Medido: 101 mutantes, 90 minutos de trabalho, e a saída visível era
+            uma linha dizendo que estourou.
+        #>
+        if ($Quiet -and $codBat -ne -1) {
+            ($saidaBat -split "`n" | Where-Object { $_ -match 'MUTANTES|indefesa|VIVO|INCONCLUSIVO|prazo' }) -join "`n"
+        } else { $saidaBat }
 
         if ($codBat -ne 0) {
             [void]$falhas.Add("bateria de mutação: há trava indefesa ou inconclusiva (código $codBat)")

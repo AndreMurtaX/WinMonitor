@@ -542,6 +542,135 @@ try {
     Assert-Equal 2 $evid[0].value 'com o valor medido, vindo do exame que o enxerto trouxe'
 
     # =====================================================================
+    Start-TestGroup 'A cadeia diária: etapa que não roda NÃO conta como verde  [MUTAÇÃO]'
+
+    <#
+        ESTE GRUPO NASCEU DE UM DEFEITO NA PRÓPRIA PEÇA QUE ELE TESTA.
+
+        A primeira versão do Invoke-Diario só olhava se a etapa ESTOURAVA.
+        Medido na primeira execução: as três emitiram aviso, nenhuma produziu
+        arquivo, e a cadeia imprimiu "COMPLETA: agregado, avaliado e entregue"
+        saindo com ZERO.
+
+        Os scripts do projeto não lançam — avisam com Write-Warning e retornam.
+        Um orquestrador que só escuta exceção não ouve nada disso, e o Agendador
+        de Tarefas registra sucesso para um dia em que nada aconteceu.
+
+        É o defeito assinatura deste projeto — etapa que não roda contando como
+        verde — cometido dentro da peça escrita para acabar com ele.
+    #>
+    $diario = Join-Path $root 'src\Invoke-Diario.ps1'
+    Assert-True (Test-Path $diario) 'a cadeia diária existe'
+
+    function Invoke-Diario {
+        param([string]$Proj)
+        $o = Join-Path $tmp ('diario-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
+        $pd = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
+                  -PassThru -NoNewWindow -Wait:$false `
+                  -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', `
+                                (Join-Path $Proj 'src\Invoke-Diario.ps1'), '-Quiet' `
+                  -RedirectStandardOutput $o -RedirectStandardError ($o + '.err')
+        $null = $pd.Handle
+        if (-not $pd.WaitForExit(600000)) { try { $pd.Kill() } catch { } }
+        $texto = [string](Get-Content -LiteralPath $o -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
+        [pscustomobject]@{ texto = $texto; codigo = $pd.ExitCode }
+    }
+
+    # Projeto SEM nenhum dia de ronda: as três etapas não têm o que fazer.
+    $pVazio = New-TempProject
+    $rv = Invoke-Diario $pVazio
+    Assert-True ($rv.codigo -ne 0) 'sem dado bruto, a cadeia REPROVA em vez de anunciar sucesso'
+    Assert-True ($rv.texto -match 'agregar: nao produziu nada') 'e nomeia a etapa que não produziu: agregar'
+    Assert-True ($rv.texto -match 'avaliar: nao produziu nada') 'avaliar'
+    Assert-True ($rv.texto -match 'entregar: nao produziu nada') 'entregar'
+    Assert-True (-not ($rv.texto -match 'CADEIA DIARIA COMPLETA')) 'sem anunciar cadeia completa'
+
+    <#
+        E COM DADO, ela roda inteira. Sem esta metade a asserção acima seria
+        satisfeita por uma cadeia que reprova SEMPRE — que também não serve.
+    #>
+    $pCheio = New-TempProject
+    foreach ($d in @(Get-DayIds -Count 3)) { Add-FixtureDay $pCheio $d -Samples 200 -Bursts 2 -BurstLen 10 -Seed 55 }
+    $rc = Invoke-Diario $pCheio
+    Assert-Equal 0 $rc.codigo 'com dias de ronda, a cadeia inteira roda e sai com zero'
+    Assert-True ($rc.texto -match 'CADEIA DIARIA COMPLETA') 'e anuncia que agregou, avaliou e entregou'
+    Assert-True ((@(Get-ChildItem (Join-Path $pCheio 'data\rollup') -File)).Count -ge 3) 'com um agregado por dia de ronda'
+    Assert-True ((@(Get-ChildItem (Join-Path $pCheio 'data\report') -File)).Count -ge 1) 'e o relatório gravado'
+
+    <#
+        A PALAVRA 'aviso' NO CORPO DO RELATÓRIO NÃO É UM AVISO DO POWERSHELL.
+
+        A detecção usava -match 'AVISO|WARNING'. '-match' é INSENSÍVEL A CAIXA,
+        então casava "Motivo do aviso: pulso" — texto legítimo que todo relatório
+        entregue contém — e reprovava a cadeia num dia em que as três etapas
+        produziram tudo. Medido contra os oito dias reais desta máquina.
+
+        É a armadilha do '-eq' que já mordeu a saúde de disco, noutra roupa.
+    #>
+    <#
+        A asserção olha o ARQUIVO do relatório, e não a saída da cadeia: com
+        -Quiet a cadeia não repete o que as etapas imprimiram, então procurar
+        ali mediria o lugar errado — e passaria ou falharia por motivo nenhum.
+    #>
+    $txtRel = [string](Get-Content -LiteralPath (Join-Path $pCheio 'data\report\ultimo.txt') -Raw -Encoding UTF8)
+    Assert-True ($txtRel -cmatch 'Motivo do aviso') 'o relatório entregue contém a palavra "aviso" no corpo, em minúsculas'
+    Assert-True (-not ($txtRel -cmatch '^\s*AVISO:')) 'e ela NÃO está no prefixo de Write-Warning'
+    Assert-Equal 0 $rc.codigo 'e por isso a cadeia passa: só o prefixo conta, não a palavra solta'
+
+    # =====================================================================
+    Start-TestGroup 'Registro das três tarefas: o horário não é decoração  [MUTAÇÃO]'
+
+    <#
+        A ORDEM DOS HORÁRIOS CARREGA UMA DECISÃO, e ela é invisível para quem
+        lê a lista de tarefas no Agendador.
+
+        O exame grava o arquivo do dia CORRENTE. A cadeia diária fecha o dia
+        ANTERIOR. Rodar os dois juntos depois da meia-noite deixaria todo dia
+        sem exame — e as duas regras de falha de hardware cairiam em "sem dado"
+        para sempre, em silêncio, com o veredito saindo 'normal'.
+
+        Por isso: exame às 23:50, ainda dentro do dia que ele descreve; cadeia
+        às 00:20, quando o exame daquele dia já existe.
+
+        Sem esta asserção, alguém "arrumaria" os horários para rodarem juntos —
+        o que parece mais simples e desliga metade do diagnóstico.
+    #>
+    $regTarefas = Join-Path $root 'tools\Register-Tasks.ps1'
+    Assert-True (Test-Path $regTarefas) 'o registrador das três tarefas existe'
+
+    $planoT = (& $regTarefas -Elevado -Simular | Out-String)
+
+    Assert-True ($planoT -match 'nada foi registrado') '-Simular anuncia que não registrou nada'
+    Assert-True ($planoT -match 'Exam - todo dia as 23:50') 'o exame roda às 23:50, dentro do dia que descreve'
+    Assert-True ($planoT -match 'Daily - todo dia as 00:20') 'e a cadeia às 00:20, fechando o dia anterior'
+    Assert-True ($planoT -match 'NAO sao intercambiaveis') 'e o plano DIZ que os horários não são intercambiáveis'
+    Assert-True ($planoT -match "cairiam em 'sem dado' em silencio") 'nomeando a consequência de inverter'
+
+    # As três, e não duas: a ronda entra delegada ao registrador dela.
+    Assert-True ($planoT -match 'Ronda: delegada') 'a ronda é registrada pelo script próprio dela'
+    Assert-True ($planoT -match 'Invoke-Exam\.ps1') 'o exame aponta para o script do exame'
+    Assert-True ($planoT -match 'Invoke-Diario\.ps1') 'e a cadeia para o orquestrador diário'
+
+    <#
+        E O TETO DE TEMPO. O exame lê o log de eventos, a única sonda deste
+        projeto sem prazo confiável — Get-WinEvent não aceita tempo limite, e
+        quem impõe prazo de verdade é o ExecutionTimeLimit da tarefa. Sem teto,
+        um exame travado seguraria a instância até alguém notar.
+    #>
+    Assert-True ($planoT -match 'teto    : 20 min') 'o exame tem teto de tempo'
+    Assert-True ($planoT -match 'teto    : 30 min') 'e a cadeia também'
+
+    <#
+        A PROVA DE QUE -Simular NÃO REGISTROU. Mesma doutrina do registrador da
+        ronda: teste não altera configuração de sistema de ninguém.
+    #>
+    & cmd.exe /c 'schtasks /query /tn "\WinMonitor\Daily" >nul 2>&1'
+    $existiaAntes = ($LASTEXITCODE -eq 0)
+    $null = (& $regTarefas -Simular | Out-String)
+    & cmd.exe /c 'schtasks /query /tn "\WinMonitor\Daily" >nul 2>&1'
+    Assert-Equal $existiaAntes ($LASTEXITCODE -eq 0) 'simular não cria nem remove tarefa nenhuma'
+
+    # =====================================================================
     Start-TestGroup 'Registro da ronda: o que ele PROMETE ao dono da máquina  [MUTAÇÃO]'
 
     <#
@@ -602,8 +731,8 @@ try {
         cada minuto por causa dessa frase. Agora o plano diz o que o nivel
         realmente faz, e o que ele NAO faz.
     #>
-    Assert-True ($planoElevado -match 'a ronda NAO le SMART fino') 'o plano DIZ que a ronda nao le SMART fino'
-    Assert-True ($planoElevado -match 'nao destrava nada hoje') 'e que sem tarefa do exame o nivel nao destrava nada'
+    Assert-True ($planoElevado -match 'a RONDA em si nao le SMART fino') 'o plano DIZ que a ronda nao le SMART fino'
+    Assert-True ($planoElevado -match 'por simetria com o exame') 'e que o nivel na ronda existe por simetria, nao por uso'
     Assert-True (-not ($planoElevado -match 'passa a poder ler SMART')) 'sem repetir a promessa que o proprio commit mediu como falsa'
     Assert-True ($planoS4U -match 'nivel Limited') 'e sem -Elevado o principal sai com nível Limited'
 

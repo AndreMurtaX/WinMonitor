@@ -82,9 +82,12 @@ $action = New-ScheduledTaskAction -Execute $psExe -Argument (
 )
 
 <#
-    Dois gatilhos: um começa agora, o outro no boot, e ambos repetem.
-    New-ScheduledTaskTrigger só aceita repetição em gatilho -Once, então a
-    repetição é copiada para o gatilho de inicialização.
+    Dois gatilhos: um começa agora e REPETE, o outro dispara no boot e NÃO
+    repete. New-ScheduledTaskTrigger só aceita repetição em gatilho -Once.
+
+    A versão anterior copiava a repetição para os dois, e o efeito só apareceu
+    no primeiro reinício: duas repetições independentes armadas em paralelo,
+    duas amostras por minuto. Medido nos oito dias de coleta desta máquina.
 
     A duração NÃO usa [TimeSpan]::MaxValue: isso gera P99999999DT23H59M59S, que
     o Agendador de Tarefas recusa como fora de intervalo. Dez anos é
@@ -135,7 +138,29 @@ $boot = if ($CurrentUserOnly) {
 } else {
     New-ScheduledTaskTrigger -AtStartup
 }
-$boot.Repetition = $now.Repetition
+<#
+    O GATILHO DE BOOT NAO REPETE, e a versao anterior fazia ele repetir.
+
+    Medido nesta maquina, oito dias de coleta:
+
+        16 a 20/08   1440 amostras/dia   exatamente uma por minuto
+        21/08        2065                <- reinicio da maquina
+        22/08        2453                <- duas por minuto o dia inteiro
+
+    O gatilho Once com repeticao SOBREVIVE ao reinicio sozinho - os cinco dias
+    perfeitos provam isso. Copiar a repeticao tambem para o gatilho de boot fez
+    com que, depois do primeiro reinicio, DUAS repeticoes independentes ficassem
+    armadas em paralelo.
+
+    O custo em disco e irrelevante. O que nao e: a logica de janela de carga
+    conta amostras CONSECUTIVAS e pressupoe uma por minuto. Com duas, uma janela
+    de tres amostras passa a durar um minuto e meio em vez de tres - e a
+    linha-base construida sobre dias dobrados mediria coisa diferente da dos
+    dias anteriores, com todos os numeros parecendo normais.
+
+    O gatilho de boot fica, sem repeticao: ele existe para o caso de o Once nao
+    rearmar, e disparar uma vez a mais no boot nao dobra nada.
+#>
 
 <#
     O NÍVEL DE EXECUÇÃO É O QUE SEPARA A RONDA DO EXAME.
@@ -241,7 +266,7 @@ if ($Simular) {
         linhas, cometido dentro da defesa contra ele.
     #>
     if ($nivel -eq 'Highest') {
-        "Nivel Highest: a ronda roda com token de administrador. ATENCAO: a ronda NAO le SMART fino - essa sonda e do EXAME, que nao tem tarefa agendada. E temperatura de NUCLEO de CPU a elevacao NAO destrava: medido, a zona ACPI da 27,9 C com a CPU a 10%, que nao e sensor de nucleo. Sem uma tarefa do exame rodando elevada, este nivel nao destrava nada hoje."
+        "Nivel Highest: a ronda roda com token de administrador. ATENCAO: a RONDA em si nao le SMART fino - quem le e o EXAME, que tem tarefa propria (tools\Register-Tasks.ps1) e precisa do mesmo nivel. E temperatura de NUCLEO de CPU a elevacao NAO destrava: medido, a zona ACPI da 27,9 C com a CPU a 10%, o que nao e sensor de nucleo. Este nivel na ronda e por simetria com o exame, nao porque ela use."
     } else {
         "Nivel Limited: SMART detalhado e temperatura de CPU seguem como lacuna DECLARADA."
     }

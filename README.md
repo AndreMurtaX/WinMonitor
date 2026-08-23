@@ -42,22 +42,200 @@ que está normal. Métrica ausente e métrica boa não podem se parecer.
 | Fase | O que é | Situação |
 | --- | --- | --- |
 | F0 | Contratos, configuração, módulo comum | pronto |
-| F1 | Ronda: sondas baratas + tarefa agendada | pronto (tarefa não registrada) |
+| F1 | Ronda: sondas baratas + tarefa agendada | pronto |
 | F2 | Armazém: agregação por faixa de carga, linha-base | pronto |
-| F3 | Exame completo: SMART, eventos, sensores | a fazer |
+| F3 | Exame completo: eventos, saúde de disco, SMART fino | pronto, com duas lacunas declaradas |
 | F4 | Regras e limiares | pronto |
 | F5 | Parecer com provedor plugável | pronto |
-| F6 | Notificação e relatório de tendência | pronto (canal remoto não configurado) |
+| F6 | Notificação: arquivo, notificação nativa, Telegram | pronto |
 
-**O que ainda não roda sozinho.** A tarefa agendada não está registrada, então
-não há coleta contínua — e sem coleta não se forma linha-base, e sem linha-base
-metade das regras fica permanentemente "sem referência". É o único item que
-separa o projeto de estar funcionando de verdade. Duas formas de resolver, em
-[Uso](#uso).
+**As duas lacunas da F3 estão declaradas, não escondidas.** Contagem de setores
+realocados exige decodificar os 512 bytes crus de `MSStorageDriver_FailurePredictData`,
+cuja tabela varia por fabricante e não tem documento público a citar — decodificar
+sem fonte seria inventar número. E temperatura de *núcleo* de CPU não é destravada
+por elevação: medido, a zona ACPI responde 27,9 °C com o processador a 10% de uso,
+o que é zona ambiente ou de chipset, não sensor de núcleo. Chamar aquilo de
+temperatura de CPU seria fabricar leitura. As duas aparecem em todo relatório na
+seção **NÃO VERIFICADO**.
 
-Sem semanas de dado acumulado, qualquer conclusão seria só uma releitura em voz
-alta do Gerenciador de Tarefas. Isso é intencional, e o sistema diz "ainda não
-sei" em vez de fingir.
+**O que separa o projeto de dizer algo útil é tempo, não código.** A linha-base
+precisa de 14 dias de ronda e 20 janelas de carga alta. Antes disso o sistema
+responde "ainda não sei" em vez de fingir — e continua avisando se a coleta parar,
+que é a única coisa que ele pode afirmar desde o primeiro dia.
+
+---
+
+## Do zero ao primeiro relatório
+
+Requisito único: **Windows com PowerShell 5.1**, que já vem no sistema. Não há
+dependência para instalar, nem runtime, nem pacote.
+
+### 1. Conferir que o que você clonou está íntegro
+
+```powershell
+.\tests\Run-All.ps1 -Rapido
+```
+
+Roda as nove suítes num processo isolado cada. Leva cerca de dois minutos e
+termina com `TODAS AS SUITES PASSARAM`. Se não terminar, **pare aqui**: o
+projeto não está íntegro na sua máquina e nada abaixo vale.
+
+O `-Rapido` pula a bateria de mutação, que recopia o projeto uma vez por
+mutante e leva cerca de uma hora. Vale rodar sem ele pelo menos uma vez, para
+ver o que este projeto entende por "testado":
+
+```powershell
+.\tests\Run-All.ps1
+```
+
+### 2. Ver uma coleta, sem gravar nada
+
+```powershell
+.\src\Invoke-Patrol.ps1 -NoWrite -PassThru
+```
+
+Devolve a amostra que a ronda gravaria: uso de CPU, memória disponível,
+frequência efetiva, GPU se houver — e o bloco `cov`, que declara quais sondas
+funcionaram e quais falharam. **É esse bloco que separa "não há problema" de
+"não consegui olhar".**
+
+### 3. Ligar o monitoramento contínuo
+
+```powershell
+.\tools\Register-Tasks.ps1 -Simular
+```
+
+Imprime o plano e **não registra nada**. Leia antes de executar: ele diz o que
+cada tarefa faz, em que horário e por quê.
+
+Para registrar de verdade, num **PowerShell como administrador**:
+
+```powershell
+.\tools\Register-Tasks.ps1 -Elevado
+```
+
+Isso cria três tarefas:
+
+| tarefa | quando | o que faz |
+| --- | --- | --- |
+| `\WinMonitor\Patrol` | a cada minuto | coleta a amostra barata |
+| `\WinMonitor\Exam` | todo dia às 23:50 | log de eventos, saúde de disco, SMART fino |
+| `\WinMonitor\Daily` | todo dia às 00:20 | agrega, avalia as regras, entrega o relatório |
+
+**Os horários não são intercambiáveis.** O exame grava o arquivo do dia
+*corrente*; a cadeia diária fecha o dia *anterior*. Rodar os dois juntos depois
+da meia-noite deixaria todo dia sem exame, e as duas regras de falha de hardware
+cairiam em "sem dado" para sempre — em silêncio, com o veredito saindo `normal`.
+Há teste que reprova quem juntar os dois.
+
+**Por que precisa de elevação:** o gatilho de inicialização e o principal S4U
+(que roda sem ninguém logado) exigem administrador para *registrar*. Depois de
+registradas, as tarefas rodam sozinhas. O nível `Highest` é o que permite ao
+exame ler os contadores de confiabilidade dos discos, que devolvem acesso negado
+em sessão comum.
+
+Para desfazer tudo:
+
+```powershell
+.\tools\Register-Tasks.ps1 -Unregister
+```
+
+### 4. Pedir um relatório agora, sem esperar a cadência
+
+```powershell
+.\src\Invoke-Diario.ps1
+```
+
+Agrega, avalia e entrega — na ordem, conferindo que cada etapa **produziu** o
+arquivo dela. Etapa que não produz não conta como sucesso, mesmo sem erro.
+
+**No primeiro dia isto REPROVA, e está certo.** O agregador só fecha dias
+completos e ignora o dia corrente, que ainda está sendo escrito. Antes da
+primeira meia-noite não há nada a agregar, e a cadeia diz exatamente isso:
+
+```
+  x agregar: nao produziu nada em data\rollup - a etapa nao fez o trabalho dela
+  x avaliar: nao produziu nada em data\findings - ...
+  x entregar: nao produziu nada em data\report - ...
+```
+
+A alternativa seria ela sair com zero anunciando "cadeia completa" sobre um dia
+em que nada aconteceu — que foi exatamente o defeito da primeira versão deste
+arquivo, e a razão de a conferência de artefato existir. Depois da primeira
+virada de dia com a ronda registrada, isso passa a sair verde sozinho.
+
+---
+
+## Aviso no celular, por Telegram
+
+Opcional, e desligado por padrão até você criar o arquivo de configuração.
+
+**Por que ele existe:** os outros dois canais falham exatamente quando mais
+precisam funcionar. O canal de arquivo escreve num disco que pode ser o que está
+morrendo; a notificação nativa aparece na sessão interativa, e a ronda roda em
+S4U, fora dela. Se o disco começar a falhar às três da manhã, sem este canal o
+aviso vai para um arquivo no disco que está falhando.
+
+### Configurar
+
+1. Fale com o [`@BotFather`](https://t.me/BotFather) no Telegram, mande
+   `/newbot` e guarde o token.
+2. Mande qualquer mensagem para o seu bot — o Telegram só permite responder a
+   quem falou primeiro.
+3. Descubra o `chatId`:
+
+```powershell
+$t = 'SEU_TOKEN_AQUI'
+(Invoke-RestMethod "https://api.telegram.org/bot$t/getUpdates").result[-1].message.chat.id
+```
+
+4. Crie `%USERPROFILE%\.claude\winmonitor-telegram.json`:
+
+```json
+{ "token": "123456:AA...", "chatId": "987654321" }
+```
+
+**O arquivo mora fora do repositório de propósito.** `config/secrets.json` está
+no `.gitignore`, e isso funciona enquanto ninguém editar o `.gitignore`, rodar
+`git add -f` ou copiar o arquivo para outro lugar da árvore. Um segredo que vive
+fora da árvore não depende de ninguém lembrar de nada.
+
+Sem esse arquivo, todo relatório imprime `Telegram FALHOU: não configurado` e
+os outros canais entregam normalmente. Se você não quiser o canal, remova
+`"Telegram"` de `notify.channels` no `config.json`.
+
+### Quando ele fala
+
+- **Mensagem idêntica à anterior não é reenviada.** Repetir a mesma frase todo
+  dia treina a pessoa a ignorar o canal, e canal ignorado é pior que canal
+  nenhum: dá impressão de cobertura que não existe.
+- **Salvo quando há erro.** Com achado, ou com a coleta doente, a mensagem sai
+  mesmo idêntica — "o disco continua doente" é notícia todo dia que continuar.
+- **Só sobre esta máquina.** Relatório cujo host não é o desta máquina veio de
+  fixture ou de outra origem, e alertar sobre o que não foi medido aqui seria
+  afirmação sem lastro.
+
+---
+
+## O que esperar nos primeiros dias
+
+| quando | o que o sistema diz |
+| --- | --- |
+| dia 1 | coleta viva, nenhum achado, cobertura incompleta — e diz *por que* está incompleta |
+| dias 2 a 13 | o mesmo, mais as regras absolutas já valendo (WHEA, disco fora de `Healthy`) |
+| dia 14+ | linha-base congelada, e as regras relativas passam a responder "isto está pior do que era?" |
+
+As regras **absolutas** valem desde o primeiro dia: erro de hardware registrado
+pelo Windows e disco que deixou de ser `Healthy` não precisam de histórico. As
+**relativas** — deriva térmica, queda de frequência, vazamento de memória — só
+significam alguma coisa contra um passado, e o sistema recusa-se a inventar um.
+
+Uma regra fica presa a hardware específico: `R-GPU-TEMP-SPEC-3080` só se aplica
+a uma GeForce RTX 3080, com o limiar publicado pela NVIDIA. Noutra placa ela
+aparece como **não aplicável** no relatório, em vez de sumir. Para adaptar,
+edite `config/thresholds.json` — e note que toda regra exige `source` com
+procedência: `spec` com URL, ou `policy` com justificativa escrita. Regra sem
+fonte é recusada pelo motor e declarada como não verificada.
 
 ---
 
@@ -73,42 +251,20 @@ Assim o trabalho real da máquina vira o teste de estresse, sem rodar nenhum.
 
 ---
 
-## Uso
+## Uso — comandos avulsos
 
-Rodar uma coleta e ver o resultado, sem gravar nada:
+Para instalar, veja [Do zero ao primeiro relatório](#do-zero-ao-primeiro-relatório).
+Esta seção é referência: cada etapa da cadeia pode ser invocada sozinha, e é
+assim que se investiga quando algo não bate.
+
+Ver uma coleta sem gravar nada:
 
 ```powershell
 .\src\Invoke-Patrol.ps1 -PassThru -NoWrite | ConvertTo-Json -Depth 8
 ```
 
-Instalar a ronda como tarefa agendada. Dois modos, e a diferença importa:
-
-```powershell
-.\tools\Register-PatrolTask.ps1 -CurrentUserOnly
-```
-
-Sem elevação. A ronda roda enquanto a conta estiver logada. É a opção para
-começar a coletar hoje.
-
-```powershell
-.\tools\Register-PatrolTask.ps1
-```
-
-Modo S4U: roda mesmo sem ninguém logado, que é o certo para um servidor. O
-**registro** exige elevação (a ronda em si, não):
-
-```powershell
-Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','C:\Dev\WinMonitor\tools\Register-PatrolTask.ps1'
-```
-
-Remover:
-
-```powershell
-.\tools\Register-PatrolTask.ps1 -Unregister
-```
-
-Agregar os dias já completos (roda uma vez por dia; ignora o dia corrente, que
-ainda está sendo escrito):
+Agregar os dias já completos — ignora o dia corrente, que ainda está sendo
+escrito:
 
 ```powershell
 .\src\Invoke-Rollup.ps1
@@ -128,23 +284,57 @@ Avaliar as regras contra o agregado do dia, e depois pedir o parecer:
 .\src\Invoke-Laudo.ps1
 ```
 
-Ver o pacote exato que o modelo receberia, sem chamar modelo nenhum:
+**Ver o pacote exato que o modelo receberia, sem chamar modelo nenhum.** É a
+forma de auditar o que ele sabe — e de confirmar que ele não sabe mais nada
+além daquilo:
 
 ```powershell
 .\src\Invoke-Laudo.ps1 -DryRun
 ```
 
-Rodar o portão — todas as suítes, a varredura de sombra de parâmetro e a
+Entregar o relatório agora, ignorando a regra de "vale a pena incomodar":
+
+```powershell
+.\src\Invoke-Report.ps1 -Force
+```
+
+Rodar o exame completo sob demanda:
+
+```powershell
+.\src\Invoke-Exam.ps1
+```
+
+Só a ronda como tarefa agendada, sem as duas diárias — modo `-CurrentUserOnly`
+dispensa elevação, ao preço de a ronda só rodar com a conta logada:
+
+```powershell
+.\tools\Register-PatrolTask.ps1 -CurrentUserOnly
+```
+
+Rodar o portão inteiro: as nove suítes, a varredura de sombra de parâmetro e a
 bateria de mutação:
 
 ```powershell
 .\tests\Run-All.ps1
 ```
 
-Sem a bateria, que recopia o projeto uma vez por mutante e leva minutos:
+Sem a bateria, que recopia o projeto uma vez por mutante:
 
 ```powershell
 .\tests\Run-All.ps1 -Rapido
+```
+
+Conferir que nenhuma variável local está apagando um parâmetro por diferença de
+caixa — a armadilha que mordeu este projeto três vezes:
+
+```powershell
+.\tools\Find-ParamShadow.ps1
+```
+
+Normalizar a codificação dos arquivos depois de editar:
+
+```powershell
+.\tools\Repair-Encoding.ps1
 ```
 
 ---
@@ -406,9 +596,25 @@ projeto: o que não foi verificado precisa estar dito.
   `AvgDisksecPerRead` como inteiro, e latências de sub-segundo podem truncar
   para zero — o que pareceria um disco perfeito. Fica para o exame, com leitura
   de contador feita corretamente.
-- **Temperatura de CPU ainda não é coletada.** Exige driver de kernel
-  (LibreHardwareMonitor). Até lá, throttling de CPU é inferido pela frequência
-  efetiva comparada à própria história.
+- **Temperatura de núcleo de CPU não é coletada, e elevação não resolve.**
+  Medido nesta máquina depois de elevar a tarefa: `MSAcpi_ThermalZoneTemperature`
+  responde, com uma zona a 27,9 °C e o processador a ~10% de uso. Um núcleo
+  nesse regime estaria entre 35 e 50 °C — aquilo é zona ambiente ou de chipset.
+  Chamar de temperatura de CPU seria fabricar leitura. Cobrir de verdade exige
+  sensor por núcleo, que só um driver de kernel de terceiro (LibreHardwareMonitor)
+  entrega, e isso não se justifica num servidor por esta métrica. Até lá,
+  throttling de CPU é inferido pela frequência efetiva contra a própria história.
+- **Contagem de setores realocados não é coletada.** Os contadores de
+  confiabilidade (temperatura, horas ligado, erros de leitura, desgaste) passaram
+  a ser lidos pela sonda `SmartDetail` desde que o exame roda elevado. O que falta
+  é a contagem por atributo SMART, que só existe nos 512 bytes crus de
+  `MSStorageDriver_FailurePredictData` — decodificação que varia por fabricante e
+  não tem tabela pública a citar. Decodificar sem fonte seria inventar número.
+- **Nem todo disco responde todo campo.** Medido nesta máquina, três discos: um
+  informa temperatura e não informa horas ligado nem erros de leitura — e é o mais
+  quente dos três. Por isso a ausência é registrada **por campo**, e os agregados
+  do topo (`hottestC`, `readErrorsMax`) vêm acompanhados de quantos discos de fato
+  responderam aquele campo.
 - **O viés de CPU da própria ronda foi medido e é desprezível.** O arranque do
   PowerShell é carga, então a suspeita era razoável. Seis leituras seguidas no
   mesmo processo deram 8–15%, com a primeira em 12% — no meio da faixa, sem
